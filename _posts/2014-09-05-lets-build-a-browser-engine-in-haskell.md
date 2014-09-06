@@ -39,6 +39,7 @@ data NodeType = Text String
 ```
 
 Finally we'll make a nice type alias for a Node:
+
 ```haskell
 type Node = NTree NodeType
 ```
