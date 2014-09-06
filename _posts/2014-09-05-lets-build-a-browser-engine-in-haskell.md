@@ -44,7 +44,7 @@ Finally we'll make a nice type alias for a Node:
 type Node = NTree NodeType
 ```
 
-All that's left to do is define our node types. We already have a full definition for `Text`, it just holds a `String`, `Element` holds an `ElementData` however, which consists of a name, and a hashmap of attributes (which we'll represent with Strings), imaginatively named `AttrMap`. Efficient maps can be annoying to write in Haskell, so we'll import a HashMap from `containers`.
+All that's left to do is define our node types. We already have a full definition for `Text`, it just holds a `String`, `Element` holds an `ElementData` however, which consists of a name, and a hashmap of attributes (which we'll represent with Strings), imaginatively named `AttrMap`. Efficient maps can be annoying to write in Haskell, so we'll import a HashMap from `unordered-containers`.
 
 ```haskell
 import qualified Data.HashMap.Strict as HM
