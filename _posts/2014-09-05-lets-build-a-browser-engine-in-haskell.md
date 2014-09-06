@@ -32,8 +32,9 @@ data NTree a = NTree a [NTree a]
 That was easy, next up are the Nodes. Matt uses a heavily pared down DOM, we'll only have text and element nodes, which we represent with a sum type.
 
 ```haskell
+import qualified Data.Text as T
 -- data specific to each node type
-data NodeType = Text String
+data NodeType = Text T.Text
               | Element ElementData
   deriving (Show)
 ```
@@ -44,14 +45,14 @@ Finally we'll make a nice type alias for a Node:
 type Node = NTree NodeType
 ```
 
-All that's left to do is define our node types. We already have a full definition for `Text`, it just holds a `String`, `Element` holds an `ElementData` however, which consists of a name, and a hashmap of attributes (which we'll represent with Strings), imaginatively named `AttrMap`. Efficient maps can be annoying to write in Haskell, so we'll import a HashMap from `unordered-containers`.
+All that's left to do is define our node types. We already have a full definition for `Text`, it just holds a `Text`, `Element` holds an `ElementData` however, which consists of a name, and a hashmap of attributes (which we'll represent with Texts), imaginatively named `AttrMap`. Efficient maps can be annoying to write in Haskell, so we'll import a HashMap from `unordered-containers`.
 
 ```haskell
 import qualified Data.HashMap.Strict as HM
 
-type AttrMap = HM.HashMap String String
+type AttrMap = HM.HashMap T.Text T.Text
 
-data ElementData = ElementData String AttrMap
+data ElementData = ElementData T.Text AttrMap
   deriving (Show)
 ```
 
@@ -60,10 +61,10 @@ Haskell manages to use a lot less space by not bothering to name fields in our t
 Matt also provides constructor functions for a `Node` with each `NodeType`. We don't strictly need these, but they'll save us a lot of space so let's write them.
 
 ```haskell
-text :: String -> Node
+text :: T.Text -> Node
 text = flip NTree [] . Text
 
-elem :: String -> AttrMap -> [Node] -> Node
+elem :: T.Text -> AttrMap -> [Node] -> Node
 elem name atts cs = NTree (Element (ElementData name atts)) cs
 ```
 
