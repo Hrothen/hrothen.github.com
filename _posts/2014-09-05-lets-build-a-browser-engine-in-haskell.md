@@ -68,4 +68,4 @@ elem name atts cs = NTree (Element (ElementData name atts)) cs
 
 We'll probably write some accessors later but this is enough to get started with. Next time, we'll write the HTML parser, and actually build a DOM using these types.
 
-The full source for this article can be found [here](https://github.com/Hrothen/Hubert/src/Dom.hs). The full source for Robinson can be found [here](https://github.com/mbrubeck/robinson).
+The full source for this article can be found [here](https://github.com/Hrothen/Hubert/blob/master/src/Dom.hs). The full source for Robinson can be found [here](https://github.com/mbrubeck/robinson).
