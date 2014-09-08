@@ -144,7 +144,7 @@ parseAttr = do
 parseAttrValue :: ParserS T.Text
 parseAttrValue = do
     open <- consumeChar
-    assert "invalid open" (open == '"' || open == '\'')
+    assert "invalid open" (open == '\"' || open == '\'')
     val <- consumeWhile (/=open)
     consumeChar >>= assert "invalid close" . (==open)
     return val
@@ -241,7 +241,7 @@ parseNode = parseElement <|> parseText
 How do we parse a `Text`? Just keep taking characters until we hit a '<'
 
 ```haskell
-parseText = liftM Dom.text $ many (noneOf "<")
+parseText = liftM (Dom.text . T.pack) $ many (noneOf "<")
 ```
 
 What about an `Element`? That's a bit longer, but still pretty readable.
@@ -254,7 +254,7 @@ parseElement = do
     children <- parseChildren
     -- closing tag
     string $ tag ++ ">" -- "</" is consumed by parseChildren, maybe bad form?
-    return $ Dom.elem tag attrs children
+    return $ Dom.elem (T.pack tag) attrs children
 
 
 -- the try combinator won't consume input if it fails, so the next parser will get that input
@@ -280,9 +280,9 @@ attributes = liftM HM.fromList $ spaces >> many (spacesAfter attribute)
 attribute = do
     name <- tagName
     char '='
-    open <- char '"' <|> char '\''
-    value <- many (noneOf [open])
-    return (name, value)
+    open <- char '\"' <|> char '\''
+    value <- manyTill anyChar (try $ char open)
+    return (T.pack name, T.pack value)
 
 
 -- run parser p and then strip the trailing spaces, returning the result of p.
