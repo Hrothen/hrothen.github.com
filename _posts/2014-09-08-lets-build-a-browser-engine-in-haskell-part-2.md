@@ -43,7 +43,7 @@ import Dom
 data Parser = Parser T.Text
 
 type ParserS = ExceptT T.Text (StateT Parser Identity)
-```haskell
+```
 
 We've defined a `Parser` as just a wrapper around a `Text`, and a `ParserS` monad transformer stack where all our parsing code will live. If you're not familiar with monad transformers you should go read [Monad Transformers Step by Step](http://www.grabmueller.de/martin/www/pub/Transformers.pdf) which, despite being a .pdf file, is actually a short introductory tutorial. To read this post though, all you need to know is that `ParserS` basically functions as a `State a` and an `Either T.Text a` at the same time, so we can carry our `Parser` along and also toss up an error if something goes wrong.
 
