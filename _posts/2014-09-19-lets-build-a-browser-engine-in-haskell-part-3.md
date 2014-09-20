@@ -12,7 +12,7 @@ Now that we've got some [tests set up]({{ site.production_url }}{{ page.previous
 
 * `<$>` is an operator synonym for `fmap`.
 * `*>` performs the action on it's left, and then the action on its right, ignoring the result of the first action. It is equivalent to `>>` on monads.
-* `<*` performs the action on its left, then the action on its right, and returns the result of the second action. It is equivalent to the monadic expression `do{ f <- foo; bar; return f}`.
+* `<*` performs the action on its left, then the action on its right, and returns the result of the first action. It is equivalent to the monadic expression `do{ f <- foo; bar; return f}`.
 * `<*>` takes a binary function inside an `Applicative` on its left, and an argument to that function, also inside an `Applicative` on the right.
 
 We mostly use `*>` and `<*` for parsers where we need to parse something but don't care about holding on to it, like trailing whitespace, or separators. `<$>` and `<*>` are useful for collecting the results of multiple parsers, for some type `Foo` we can write `Foo <$> bar <*> baz <*> quux` instead of
