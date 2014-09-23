@@ -260,6 +260,6 @@ Why not
 Control.Monad.unless b $ throwError s
 ```
 
-I'll make all these changes except for one: I'm not going to change `(flip HS.member (classes e))` to `(`HS.member` (classes e))` because it doesn't really seem any better to me (possibly because Sublime refuses to color it). You can go ahead and make the change if you want. I'll try to remember to lint as I go from now on, so we can avoid these interludes in the future.
+I'll make all these changes except for one: I'm not going to change `(flip HS.member (classes e))` to ```(`HS.member` (classes e))``` because it doesn't really seem any better to me (possibly because Sublime refuses to color it). You can go ahead and make the change if you want. I'll try to remember to lint as I go from now on, so we can avoid these interludes in the future.
 
 As usual, you can find the source for this post [here](https://github.com/Hrothen/Hubert/blob/master/src/Style.hs) and the source for Robinson [here](https://github.com/mbrubeck/robinson).
