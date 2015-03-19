@@ -1,5 +1,5 @@
 _site/*
-_theme_packages/*
+_cache/*
 
 Thumbs.db
 .DS_Store
@@ -14,3 +14,6 @@ Gemfile.*
 
 .cabal-sandbox
 cabal.sandbox.config
+
+*.o
+*.hi
