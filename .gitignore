@@ -11,3 +11,6 @@ Thumbs.db
 
 Gemfile
 Gemfile.*
+
+.cabal-sandbox
+cabal.sandbox.config
