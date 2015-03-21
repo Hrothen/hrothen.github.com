@@ -1,6 +1,6 @@
 ---
-title: "Let's Build a Browser Engine in Haskell: part 3"
-description: ""
+title: Let's Build a Browser Engine in Haskell: part 3
+description: In which we parse CSS
 category: 
 tags: []
 ---

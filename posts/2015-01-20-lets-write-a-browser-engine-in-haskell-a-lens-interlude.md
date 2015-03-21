@@ -1,6 +1,6 @@
 ---
-title: "Let's Write a Browser Engine in Haskell: a lens interlude"
-description: ""
+title: Let's Write a Browser Engine in Haskell: a lens interlude
+description: In which we sell our souls in exchange for the power to make Layout.hs suck less
 category: 
 tags: []
 ---

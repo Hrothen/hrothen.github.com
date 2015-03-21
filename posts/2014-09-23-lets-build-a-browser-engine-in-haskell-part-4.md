@@ -1,6 +1,6 @@
 ---
-title: "Let's Build a Browser Engine in Haskell: part 4"
-description: ""
+title: Let's Build a Browser Engine in Haskell: part 4
+description: In which the DOM is styled
 category: 
 tags: []
 ---

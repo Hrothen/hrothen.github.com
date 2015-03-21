@@ -1,6 +1,6 @@
 ---
-title: "Let's Build a Browser Engine in Haskell: setting up tests"
-description: ""
+title: Let's Build a Browser Engine in Haskell: setting up tests
+description: In which we remember that tests are a thing we should have
 category: 
 tags: []
 ---

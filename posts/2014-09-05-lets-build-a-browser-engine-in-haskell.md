@@ -1,6 +1,6 @@
 ---
-title: "Let's Build a Browser Engine in Haskell"
-description: ""
+title: Let's Build a Browser Engine in Haskell
+description: In which we set up some types
 category: 
 tags: []
 ---

@@ -38,9 +38,11 @@ main = hakyll $ do
     postList <- sortOnDate <$> getMatches "posts/*"
 
     match "posts/*" $ do
+
         -- strip date from filename when producing route
         route $ gsubRoute postDateRegex (const "posts/") `composeRoutes`
                 setExtension "html"
+        
         compile $ do
             let postLocationContext =
                     field "nextPost" (nextPostURL postList) `mappend`
@@ -66,7 +68,7 @@ main = hakyll $ do
                 >>= relativizeUrls
 
 
-    match "index.html" $ do
+    create ["index.html"] $ do
         route idRoute
         compile $ do
             posts <- recentFirst =<< loadAll "posts/*"
@@ -75,7 +77,8 @@ main = hakyll $ do
                     constField "title" "Home"                `mappend`
                     defaultContext
 
-            getResourceBody
+            makeItem ""
+                >>= loadAndApplyTemplate "templates/index.html" indexCtx
                 >>= applyAsTemplate indexCtx
                 >>= loadAndApplyTemplate "templates/default.html" indexCtx
                 >>= relativizeUrls
