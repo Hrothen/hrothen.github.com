@@ -118,7 +118,7 @@ lookupNext ids id = lookup id $ zip ids (tail ids)
 
 
 sortOnDate :: [Identifier] -> [Identifier]
-sortOnDate = reverse . sortBy (compare `on` asDate)
+sortOnDate = sortBy (compare `on` asDate)
   where
     asDate :: Identifier -> Maybe UTCTime
     asDate =  parseTime' . takeFileName . toFilePath
