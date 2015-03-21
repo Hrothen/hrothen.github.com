@@ -1,14 +1,11 @@
 ---
-layout: post
 title: "Let's Build a Browser Engine in Haskell: Part 2"
 description: ""
 category: 
 tags: []
 ---
-{% include JB/setup %}
 
-
-Ok, so in [part 1]({{ site.production_url }}{{ page.previous.url }}) we built a set of types to use for a really basic DOM. In part 2, we'll write a simple html parser (actually we'll write two) that only supports Balanced Tags, Attributes with quoted values, and Text nodes.
+Ok, so in [part 1](lets-build-a-browser-engine-in-haskell.html) we built a set of types to use for a really basic DOM. In part 2, we'll write a simple html parser (actually we'll write two) that only supports Balanced Tags, Attributes with quoted values, and Text nodes.
 
 #Why two parsers?#
 

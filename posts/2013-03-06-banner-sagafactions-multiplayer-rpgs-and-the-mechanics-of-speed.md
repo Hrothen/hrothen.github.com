@@ -1,11 +1,9 @@
 ---
-layout: post
 title: "Banner Saga:Factions, multiplayer RPGs, and the mechanics of speed"
 description: "Some musings on what the Banner Saga has to teach us about multiplayer RPGs"
 category: 
 tags: []
 ---
-{% include JB/setup %}
 
 The folks over at Stoic released the free to play multiplayer component of their post-ragnarok tactical rpg epic [The Banner Saga](http://stoicstudio.com/forum/the-banner-saga-factions.php) last week. I haven't played a whole lot, for reasons I'll get into in a bit, but I have played a few games and I'd like to talk about the game itself a bit before moving on to some perhaps more interesting musings on what it tells us about rpgs in the multiplayer space.
 

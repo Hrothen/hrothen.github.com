@@ -1,11 +1,9 @@
 ---
-layout: post
 title: "Let's Build a Browser Engine in Haskell: part 6"
 description: ""
 category: 
 tags: []
 ---
-{% include JB/setup %}
 
 Welcome back, today we're going to implement painting of the layout tree to an image (but not to a real window, yet). The actual painting code is fairly simple, but before that we're going to want to backtrack and modify some older code.
 

@@ -1,11 +1,9 @@
 ---
-layout: post
 title: "Let's Build a Browser Engine in Haskell: setting up tests"
 description: ""
 category: 
 tags: []
 ---
-{% include JB/setup %}
 
 Welcome back. In [part 2]({{ site.production_url }}{{ page.previous.url }}) we wrote an html parser two different ways, and decided to implement some tests before going any further. Let's do that now.
 

@@ -1,11 +1,9 @@
 ---
-layout: post
 title: "Let's Build a Browser Engine in Haskell"
 description: ""
 category: 
 tags: []
 ---
-{% include JB/setup %}
 
 Matt Brubeck over at Mozilla has recently started a series of [blog posts](http://limpet.net/mbrubeck/2014/08/08/toy-layout-engine-1.html) on constructing a toy html rendering engine in Rust. Now, I'm not particularly interested in Rust, but I *am* interested in web browsers, so I thought it might be fun to try following along in Haskell instead (obviously, I could also use an imperative language like C++, but that would be less interesting).
 

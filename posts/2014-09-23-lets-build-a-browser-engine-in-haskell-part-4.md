@@ -1,11 +1,9 @@
 ---
-layout: post
 title: "Let's Build a Browser Engine in Haskell: part 4"
 description: ""
 category: 
 tags: []
 ---
-{% include JB/setup %}
 
 Hey guys, since I'm trying to stick to the same content per post as Matt's blog, this post will be pretty short.
 

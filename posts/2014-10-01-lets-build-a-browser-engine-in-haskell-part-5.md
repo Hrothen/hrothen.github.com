@@ -1,11 +1,9 @@
 ---
-layout: post
 title: "Let's Build a Browser Engine in Haskell: part 5"
 description: ""
 category: 
 tags: []
 ---
-{% include JB/setup %}
 
 Welcome back, today we're going to implement Boxes and also the Block Layout, because Matt's post on Boxes was mostly talking about how they're set up and I don't have to do that since he already has. To start with we're going to want to set up our imports and define some new types.
 

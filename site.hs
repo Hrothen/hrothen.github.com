@@ -101,12 +101,6 @@ prevPostURL posts post = do
     case prev of Just p  -> (fmap (maybe empty $ toUrl) . getRoute) p
                  Nothing -> empty
 
--- prevPostURL posts post = let p = lookupPrev posts $ itemIdentifier post
---                          in maybe empty mkURL p
-
-
-mkURL :: Identifier -> Compiler String
-mkURL p = (fmap (maybe empty $ toUrl) . getRoute) p
 
 nextPostURL :: [Identifier] -> Item String -> Compiler String
 nextPostURL posts post = do
@@ -115,11 +109,13 @@ nextPostURL posts post = do
     case next of Just n  -> maybe empty toUrl <$> getRoute n
                  Nothing -> empty
 
+
 lookupPrev :: Eq a => [a] -> a -> Maybe a
 lookupPrev ids id = lookup id $ zip (tail ids) ids
 
 lookupNext :: Eq a => [a] -> a -> Maybe a
 lookupNext ids id = lookup id $ zip ids (tail ids)
+
 
 sortOnDate :: [Identifier] -> [Identifier]
 sortOnDate = reverse . sortBy (compare `on` asDate)

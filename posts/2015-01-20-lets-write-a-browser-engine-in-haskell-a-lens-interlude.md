@@ -1,11 +1,9 @@
 ---
-layout: post
 title: "Let's Write a Browser Engine in Haskell: a lens interlude"
 description: ""
 category: 
 tags: []
 ---
-{% include JB/setup %}
 
 This post doesn't cover any new functionality, instead, we'll be revisiting some old code and refactoring it to be less awful. In particular, we'll be using [lenses](http://ekmett.github.io/lens/index.html) make our nested datatypes less annoying to work with. I've tried to record every change I made, but it's possible I missed something, if you have trouble compiling, look at the github changelog to try to find the issue, and also let me know so I can update this article.
 

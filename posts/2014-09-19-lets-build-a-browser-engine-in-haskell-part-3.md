@@ -1,12 +1,9 @@
 ---
-layout: post
 title: "Let's Build a Browser Engine in Haskell: part 3"
 description: ""
 category: 
 tags: []
 ---
-{% include JB/setup %}
-
 
 Now that we've got some [tests set up]({{ site.production_url }}{{ page.previous.url }}), we're ready to write a CSS parser. But first, I'd like to take a minute to talk about `Control.Applicative` and some of the combinators it contains. Applicative combinators are really useful for building parsers, but tend to look a lot like voodoo when presented without explanation. We've already used `Parsec`'s `<|>` combinator, which tries the parser on its left, and then the one on its right if the first fails. In writing our CSS parser, we'll also use the following operators:
 
