@@ -38,7 +38,9 @@ main = hakyll $ do
     postList <- sortOnDate <$> getMatches "posts/*"
 
     match "posts/*" $ do
-        route $ setExtension "html"
+        -- strip date from filename when producing route
+        route $ gsubRoute postDateRegex (const "posts/") `composeRoutes`
+                setExtension "html"
         compile $ do
             let postLocationContext =
                     field "nextPost" (nextPostURL postList) `mappend`
@@ -87,6 +89,9 @@ postCtx =
     dateField "date" "%B %e, %Y" `mappend`
     defaultContext
 
+-- match the post/date part of the post filename
+postDateRegex :: String
+postDateRegex = "posts/[0-9]{4}-[0-9]{2}-[0-9]{2}-"
 
 ----------------------------------------------------------------------------
 -- | Implement "next" and "previous" fields for posts

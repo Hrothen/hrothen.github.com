@@ -5,7 +5,7 @@ category:
 tags: []
 ---
 
-Welcome back. In [part 2]({{ site.production_url }}{{ page.previous.url }}) we wrote an html parser two different ways, and decided to implement some tests before going any further. Let's do that now.
+Welcome back. In [part 2](lets-build-a-browser-engine-in-haskell-part-2.html) we wrote an html parser two different ways, and decided to implement some tests before going any further. Let's do that now.
 
 Setting up some simple tests
 ============================
