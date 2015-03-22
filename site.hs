@@ -3,8 +3,8 @@
 import           Control.Applicative (Alternative(..))
 import           Data.Functor ((<$>))
 import           Data.Function (on)
-import           Data.List (intercalate, sortBy)
-import           Data.Maybe (maybe)
+import           Data.List (intercalate, sortBy, stripPrefix)
+import           Data.Maybe (maybe, fromJust)
 import           Data.Monoid (mappend)
 import           System.FilePath (takeFileName)
 
@@ -42,7 +42,7 @@ main = hakyll $ do
         -- strip date from filename when producing route
         route $ gsubRoute postDateRegex (const "posts/") `composeRoutes`
                 setExtension "html"
-        
+
         compile $ do
             let postLocationContext =
                     field "nextPost" (nextPostURL postList) `mappend`
@@ -53,10 +53,24 @@ main = hakyll $ do
                 >>= loadAndApplyTemplate "templates/default.html" postLocationContext
                 >>= relativizeUrls
 
+    -- go through the posts and generate redirect pages for the old URL style
+    match "posts/*" $ version "redirects" $ do
+        route $ gsubRoute postDateRegex formatOldPost `composeRoutes`
+                setExtension "html"
+
+            --generate minimal files to redirect old URLs to the current ones
+        compile $ do
+            let postRouteContext =
+                    field "postName" redirectTarget `mappend`
+                    postCtx
+            pandocCompiler
+                >>= loadAndApplyTemplate "templates/redirect.html" postRouteContext
+
+
     create ["archive.html"] $ do
         route idRoute
         compile $ do
-            posts <- recentFirst =<< loadAll "posts/*"
+            posts <- recentFirst =<< loadAll ("posts/*" .&&. hasNoVersion)
             let archiveCtx =
                     listField "posts" postCtx (return posts) `mappend`
                     constField "title" "Archives"            `mappend`
@@ -71,7 +85,7 @@ main = hakyll $ do
     create ["index.html"] $ do
         route idRoute
         compile $ do
-            posts <- recentFirst =<< loadAll "posts/*"
+            posts <- recentFirst =<< loadAll ("posts/*" .&&. hasNoVersion)
             let indexCtx =
                     listField "posts" postCtx (return posts) `mappend`
                     constField "title" "Home"                `mappend`
@@ -133,3 +147,20 @@ sortOnDate = sortBy (compare `on` asDate)
 
     parseTime' = parseTime defaultTimeLocale "%Y-%m-%d"
                . intercalate "-" . take 3 . splitAll "-"
+
+----------------------------------------------------------------------------
+-- | utils
+--
+
+redirectTarget :: Item a -> Compiler String
+redirectTarget item = do
+    let path       = toFilePath $ itemIdentifier item
+        stripDate  = replaceAll postDateRegex (const "posts/")
+        dropSuffix = replaceAll ".md" (const ".html")
+    return $ dropSuffix $ stripDate path
+
+
+-- take a string that looks like "posts/yyyy-mm-dd-"
+-- and turn it into yyyy/mm/dd/
+formatOldPost :: String -> String
+formatOldPost = replaceAll "-" (const "/") . fromJust . stripPrefix "posts/"
