@@ -2,6 +2,7 @@
 title: Let's Build a Browser Engine in Haskell: Part 2
 description: In which we parse HTML
 category: 
+aliases: ["2014/09/08/lets-build-a-browser-engine-in-haskell-part-2/"]
 tags: []
 ---
 

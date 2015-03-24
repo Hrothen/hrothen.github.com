@@ -2,6 +2,7 @@
 title: Let's Build a Browser Engine in Haskell: part 5
 description: In which everything is terrible forever
 category: 
+aliases: ["2014/10/01/lets-build-a-browser-engine-in-haskell-part-5/"]
 tags: []
 ---
 

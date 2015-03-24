@@ -2,6 +2,7 @@
 title: Banner Saga:Factions, multiplayer RPGs, and the mechanics of speed
 description: Some musings on what the Banner Saga has to teach us about multiplayer RPGs
 category: 
+aliases: ["2013/03/06/banner-sagafactions-multiplayer-rpgs-and-the-mechanics-of-speed/"]
 tags: []
 ---
 

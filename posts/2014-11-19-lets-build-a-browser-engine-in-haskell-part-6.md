@@ -2,6 +2,7 @@
 title: Let's Build a Browser Engine in Haskell: part 6
 description: In which we finally produce some output
 category: 
+aliases: ["/2014/11/19/lets-build-a-browser-engine-in-haskell-part-6/"]
 tags: []
 ---
 

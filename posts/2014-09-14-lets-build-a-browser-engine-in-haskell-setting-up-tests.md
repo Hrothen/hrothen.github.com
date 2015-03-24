@@ -2,6 +2,7 @@
 title: Let's Build a Browser Engine in Haskell: setting up tests
 description: In which we remember that tests are a thing we should have
 category: 
+aliases: ["2014/09/14/lets-build-a-browser-engine-in-haskell-setting-up-tests/"]
 tags: []
 ---
 

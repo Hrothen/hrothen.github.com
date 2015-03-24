@@ -2,6 +2,7 @@
 title: Let's Build a Browser Engine in Haskell
 description: In which we set up some types
 category: 
+aliases: ["2014/09/05/lets-build-a-browser-engine-in-haskell/"]
 tags: []
 ---
 
