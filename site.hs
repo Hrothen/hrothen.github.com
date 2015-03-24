@@ -49,6 +49,7 @@ main = hakyll $ do
                     postCtx
             pandocCompiler
                 >>= loadAndApplyTemplate "templates/post.html"    postLocationContext
+                >>= saveSnapshot "content"
                 >>= loadAndApplyTemplate "templates/default.html" postLocationContext
                 >>= relativizeUrls
 
@@ -99,6 +100,28 @@ main = hakyll $ do
                 >>= relativizeUrls
 
     match "templates/*" $ compile templateCompiler
+
+    create ["atom.xml"] $ do
+        route idRoute
+        compile $ do
+            let feedCtx = bodyField "description" `mappend` postCtx
+            loadAllSnapshots "posts/*" "content"
+                >>= fmap (take 10) . recentFirst
+                >>= renderAtom atomFeedConfiguration feedCtx
+
+
+----------------------------------------------------------------------------
+-- | atom feed configuration
+-- 
+atomFeedConfiguration :: FeedConfiguration
+atomFeedConfiguration = FeedConfiguration
+    { feedTitle       = "Also Sprach Leif"
+    , feedDescription = ""
+    , feedAuthorName  = "Leif Grele"
+    , feedAuthorEmail = ""
+    , feedRoot        = "http://hrothen.github.com"
+    }
+
 
 
 --------------------------------------------------------------------------------
