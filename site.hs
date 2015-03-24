@@ -1,16 +1,20 @@
 --------------------------------------------------------------------------------
 {-# LANGUAGE OverloadedStrings #-}
 import           Control.Applicative (Alternative(..))
+import           Control.Arrow (first, second)
 import           Data.Functor ((<$>))
 import           Data.Function (on)
-import           Data.List (intercalate, sortBy, stripPrefix)
+import           Data.List (intercalate, sortBy, stripPrefix, find)
 import           Data.Maybe (maybe, fromJust)
 import           Data.Monoid (mappend)
-import           System.FilePath (takeFileName)
+import           System.FilePath (takeFileName, (</>), dropExtension,
+                                  replaceExtension)
 
 import           Data.Time.Format (parseTime)
 import           System.Locale (defaultTimeLocale)
 import           Data.Time.Clock (UTCTime)
+
+import qualified Data.Map.Lazy as M
 
 
 import           Hakyll
@@ -54,17 +58,29 @@ main = hakyll $ do
                 >>= relativizeUrls
 
     -- go through the posts and generate redirect pages for the old URL style
-    match "posts/*" $ version "redirects" $ do
-        route $ gsubRoute postDateRegex formatOldPost `composeRoutes`
-                setExtension "html"
+    --match "posts/*" $ version "redirects" $ do
+    --    route $ gsubRoute postDateRegex formatOldPost `composeRoutes`
+    --            setExtension "html"
 
-            --generate minimal files to redirect old URLs to the current ones
+    --        --generate minimal files to redirect old URLs to the current ones
+    --    compile $ do
+    --        let postRouteContext =
+    --                field "postName" redirectTarget `mappend`
+    --                postCtx
+    --        pandocCompiler
+    --            >>= loadAndApplyTemplate "templates/redirect.html" postRouteContext
+
+    aliasList <- getAliases <$> getAllMetadata "posts/*"
+    let aliases = map fromFilePath $ snd $ unzip aliasList
+
+    create aliases $ do
+        route idRoute
         compile $ do
-            let postRouteContext =
-                    field "postName" redirectTarget `mappend`
-                    postCtx
-            pandocCompiler
-                >>= loadAndApplyTemplate "templates/redirect.html" postRouteContext
+            let aliasCtx = field "postName" (target aliasList) `mappend`
+                           defaultContext
+            makeItem ""
+                >>= loadAndApplyTemplate "templates/redirect.html" aliasCtx
+                >>= relativizeUrls
 
 
     create ["archive.html"] $ do
@@ -164,3 +180,29 @@ redirectTarget item = do
 -- and turn it into yyyy/mm/dd/
 formatOldPost :: String -> String
 formatOldPost = replaceAll "-" (const "/") . fromJust . stripPrefix "posts/"
+
+getAliases :: [(Identifier,Metadata)] -> [(String,String)]
+getAliases ids =
+    let pairs = filter (not . null . snd) $ map expand ids
+        paths = map (second (map addIndex) . first idToPath) pairs
+    in concatMap unzipSecond paths
+
+  where
+    expand :: (Identifier,Metadata) -> (Identifier,[String])
+    expand (a,x) = let x' = maybe [] read $ M.lookup "aliases" x
+                   in (a,x')
+
+    idToPath :: Identifier -> FilePath
+    idToPath = replaceAll postDateRegex (const "posts/") . toFilePath
+
+    addIndex :: FilePath -> FilePath
+    addIndex f = dropWhile (=='/')  $ (dropExtension f) </> "index.html"
+
+target :: [(String,String)] -> Item String -> Compiler String
+target as i = do
+    let id   = toFilePath $ itemIdentifier i
+        path = fst $ fromJust $ find ((==id) . snd) as
+    return $ replaceExtension path "html"
+
+unzipSecond :: (a,[b]) -> [(a,b)]
+unzipSecond (x,ys) = map (\a->(x,a)) ys

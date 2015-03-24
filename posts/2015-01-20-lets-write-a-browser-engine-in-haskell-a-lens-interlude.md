@@ -2,6 +2,7 @@
 title: Let's Write a Browser Engine in Haskell: a lens interlude
 description: In which we sell our souls in exchange for the power to make Layout.hs suck less
 category: 
+aliases: ["2015/01/20/lets-write-a-browser-engine-in-haskell-a-lens-interlude/"]
 tags: []
 ---
 
