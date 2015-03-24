@@ -3,16 +3,11 @@
 import           Control.Applicative (Alternative(..))
 import           Control.Arrow (first, second)
 import           Data.Functor ((<$>))
-import           Data.Function (on)
-import           Data.List (intercalate, sortBy, stripPrefix, find)
-import           Data.Maybe (maybe, fromJust)
+import           Data.List (stripPrefix, find)
+import           Data.Maybe (fromJust)
 import           Data.Monoid (mappend)
-import           System.FilePath (takeFileName, (</>), dropExtension,
-                                  replaceExtension)
 
-import           Data.Time.Format (parseTime)
-import           System.Locale (defaultTimeLocale)
-import           Data.Time.Clock (UTCTime)
+import           System.FilePath ((</>), dropExtension, replaceExtension)
 
 import qualified Data.Map.Lazy as M
 
@@ -153,11 +148,6 @@ lookupNext ids id = lookup id $ zip ids (tail ids)
 
 stripPostDate :: FilePath -> FilePath
 stripPostDate = replaceAll postDateRegex (const "posts/")
-
--- take a string that looks like "posts/yyyy-mm-dd-"
--- and turn it into yyyy/mm/dd/
-formatOldPost :: String -> String
-formatOldPost = replaceAll "-" (const "/") . fromJust . stripPrefix "posts/"
 
 -- convert a list of (Identifier,Metadata) into a list of (target,alias)
 getAliases :: [(Identifier,Metadata)] -> [(FilePath,FilePath)]
