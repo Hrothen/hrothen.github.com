@@ -39,7 +39,7 @@ main = hakyll $ do
             >>= relativizeUrls
 
 
-    postList <- sortOnDate <$> getMatches "posts/*"
+    postList <- sortRecentFirst =<< getMatches "posts/*"
 
     match "posts/*" $ do
 
@@ -57,18 +57,8 @@ main = hakyll $ do
                 >>= loadAndApplyTemplate "templates/default.html" postLocationContext
                 >>= relativizeUrls
 
-    -- go through the posts and generate redirect pages for the old URL style
-    --match "posts/*" $ version "redirects" $ do
-    --    route $ gsubRoute postDateRegex formatOldPost `composeRoutes`
-    --            setExtension "html"
-
-    --        --generate minimal files to redirect old URLs to the current ones
-    --    compile $ do
-    --        let postRouteContext =
-    --                field "postName" redirectTarget `mappend`
-    --                postCtx
-    --        pandocCompiler
-    --            >>= loadAndApplyTemplate "templates/redirect.html" postRouteContext
+    
+    -- produce redirect pages for every page that defines the "aliases" metadata
 
     aliasList <- getAliases <$> getAllMetadata "posts/*"
     let aliases = map fromFilePath $ snd $ unzip aliasList
@@ -76,7 +66,7 @@ main = hakyll $ do
     create aliases $ do
         route idRoute
         compile $ do
-            let aliasCtx = field "postName" (target aliasList) `mappend`
+            let aliasCtx = field "postName" (getRealName aliasList) `mappend`
                            defaultContext
             makeItem ""
                 >>= loadAndApplyTemplate "templates/redirect.html" aliasCtx
@@ -132,20 +122,22 @@ postDateRegex = "posts/[0-9]{4}-[0-9]{2}-[0-9]{2}-"
 -- https://github.com/rgoulter/my-hakyll-blog
 --
 
+findPostUrl :: ([Identifier] -> Identifier -> Maybe Identifier)
+             -> [Identifier] -> Item String
+             -> Compiler String
+findPostUrl p posts post = do
+    let id = itemIdentifier post
+    case p posts id of
+        Just m  -> maybe empty toUrl <$> getRoute m
+        Nothing -> empty
+
+
 prevPostURL :: [Identifier] -> Item String -> Compiler String
-prevPostURL posts post = do
-    let id   = itemIdentifier post
-        prev = lookupPrev posts id
-    case prev of Just p  -> (fmap (maybe empty $ toUrl) . getRoute) p
-                 Nothing -> empty
+prevPostURL = findPostUrl lookupPrev
 
 
 nextPostURL :: [Identifier] -> Item String -> Compiler String
-nextPostURL posts post = do
-    let id   = itemIdentifier post
-        next = lookupNext posts id
-    case next of Just n  -> maybe empty toUrl <$> getRoute n
-                 Nothing -> empty
+nextPostURL = findPostUrl lookupNext
 
 
 lookupPrev :: Eq a => [a] -> a -> Maybe a
@@ -155,51 +147,39 @@ lookupNext :: Eq a => [a] -> a -> Maybe a
 lookupNext ids id = lookup id $ zip ids (tail ids)
 
 
-sortOnDate :: [Identifier] -> [Identifier]
-sortOnDate = sortBy (compare `on` asDate)
-  where
-    asDate :: Identifier -> Maybe UTCTime
-    asDate =  parseTime' . takeFileName . toFilePath
-
-    parseTime' = parseTime defaultTimeLocale "%Y-%m-%d"
-               . intercalate "-" . take 3 . splitAll "-"
-
 ----------------------------------------------------------------------------
--- | utils
+-- | Implement "aliases" metadata field for producing page redirects
 --
 
-redirectTarget :: Item a -> Compiler String
-redirectTarget item = do
-    let path       = toFilePath $ itemIdentifier item
-        stripDate  = replaceAll postDateRegex (const "posts/")
-        dropSuffix = replaceAll ".md" (const ".html")
-    return $ dropSuffix $ stripDate path
-
+stripPostDate :: FilePath -> FilePath
+stripPostDate = replaceAll postDateRegex (const "posts/")
 
 -- take a string that looks like "posts/yyyy-mm-dd-"
 -- and turn it into yyyy/mm/dd/
 formatOldPost :: String -> String
 formatOldPost = replaceAll "-" (const "/") . fromJust . stripPrefix "posts/"
 
-getAliases :: [(Identifier,Metadata)] -> [(String,String)]
+-- convert a list of (Identifier,Metadata) into a list of (target,alias)
+getAliases :: [(Identifier,Metadata)] -> [(FilePath,FilePath)]
 getAliases ids =
     let pairs = filter (not . null . snd) $ map expand ids
         paths = map (second (map addIndex) . first idToPath) pairs
     in concatMap unzipSecond paths
 
   where
-    expand :: (Identifier,Metadata) -> (Identifier,[String])
+    expand :: (Identifier,Metadata) -> (Identifier,[FilePath])
     expand (a,x) = let x' = maybe [] read $ M.lookup "aliases" x
                    in (a,x')
 
     idToPath :: Identifier -> FilePath
-    idToPath = replaceAll postDateRegex (const "posts/") . toFilePath
+    idToPath = stripPostDate . toFilePath
 
     addIndex :: FilePath -> FilePath
-    addIndex f = dropWhile (=='/')  $ (dropExtension f) </> "index.html"
+    addIndex f = dropWhile (=='/')  $ dropExtension f </> "index.html"
 
-target :: [(String,String)] -> Item String -> Compiler String
-target as i = do
+-- get the path of the page an alias is pointing to
+getRealName :: [(FilePath,FilePath)] -> Item String -> Compiler String
+getRealName as i = do
     let id   = toFilePath $ itemIdentifier i
         path = fst $ fromJust $ find ((==id) . snd) as
     return $ replaceExtension path "html"
