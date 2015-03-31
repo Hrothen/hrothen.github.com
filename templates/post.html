@@ -1,18 +1,20 @@
-<div class="info">
-    Posted on $date$
-    $if(author)$
-        by $author$
-    $endif$
-</div>
-
-$body$
-
-<div>
-    $if(prevPost)$
-        <a href="$prevPost$" style="float:left;">Previous post</a>
-    $endif$
-    $if(nextPost)$
-        <a href="$nextPost$" style="float:right; text-align: right;">Next post</a>
-    $endif$
-</div>
-<br>
+<article>
+    <div class="info">
+        Posted on $date$
+        $if(author)$
+            by $author$
+        $endif$
+    </div>
+    
+    $body$
+    
+    <div>
+        $if(prevPost)$
+            <a href="$prevPost$" style="float:left;">Previous post</a>
+        $endif$
+        $if(nextPost)$
+            <a href="$nextPost$" style="float:right; text-align: right;">Next post</a>
+        $endif$
+    </div>
+    <br>
+</article>
