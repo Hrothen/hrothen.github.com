@@ -1,8 +1,8 @@
 body {
     color: black;
     font-size: 16px;
-    margin: 0px auto 0px auto;
-    width: 600px;
+    margin: 0px 20% 0px 20%;
+    width: auto;
 }
 
 header {
@@ -54,3 +54,20 @@ div.info {
     font-size: 14px;
     font-style: italic;
 }
+
+pre { font-size: 12px }
+code { font-size: 12px }
+
+code.sourceCode span.kw { color: #000; font-weight: bold } /* Keyword */
+code.sourceCode span.dt { color: #204a87 } /* Keyword.Type */
+code.sourceCode span.dv { color: #099 } /* Literal.Number.Integer */
+code.sourceCode span.bn { color: #0000cf } /* Literal.Number.Hex */
+code.sourceCode span.fl { color: #0000cf } /* Literal.Number.Float */
+code.sourceCode span.ch { color: #d14 } /* Literal.String.Char */
+code.sourceCode span.st { color: #d14 } /* Literal.String */
+code.sourceCode span.co { color: #998; font-style: italic } /* Comment */
+code.sourceCode span.ot { color: #333 } /* Comment.Preproc */
+code.sourceCode span.al { color: #ef2929 } /* Generic.Error */
+code.sourceCode span.fu { color: #333 } /* Name.Function */
+code.sourceCode span.re { }
+code.sourceCode span.er { color: #a40000; border: 1px solid #ef2929 } /* Error */
