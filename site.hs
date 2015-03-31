@@ -26,6 +26,10 @@ main = hakyll $ do
         route   idRoute
         compile compressCssCompiler
 
+    match "fonts/*" $ do
+        route idRoute
+        compile copyFileCompiler
+
 
     match "about.html" $ do
         route idRoute

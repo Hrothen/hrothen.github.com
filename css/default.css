@@ -1,3 +1,9 @@
+
+@font-face {
+    font-family: "PT Mono";
+    src: url('../fonts/PTM55FT.ttf');
+}
+
 body {
     color: black;
     font-size: 16px;
@@ -71,3 +77,9 @@ code.sourceCode span.al { color: #ef2929 } /* Generic.Error */
 code.sourceCode span.fu { color: #333 } /* Name.Function */
 code.sourceCode span.re { }
 code.sourceCode span.er { color: #a40000; border: 1px solid #ef2929 } /* Error */
+
+.Dorfblock {
+    font-family: 'PT Mono', sans-serif;
+    background-color: black;
+    color: white;
+}
