@@ -68,7 +68,7 @@ div.info {
     font-style: italic;
 }
 
-div.postNav{
+nav#postNav{
     font-style: italic;
     margin-bottom: 40px
 }
