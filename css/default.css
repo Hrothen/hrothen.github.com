@@ -42,7 +42,7 @@ footer {
     border-top: solid 2px black;
     color: #555;
     font-size: 12px;
-    margin-top: 30px;
+    margin-top: 10px;
     padding: 12px 0px 12px 0px;
     text-align: right;
 }
@@ -63,7 +63,7 @@ div.info {
 
 div.postNav{
     font-style: italic;
-    padding-bottom: 1px
+    margin-bottom: 40px
 }
 
 div#tagline {
