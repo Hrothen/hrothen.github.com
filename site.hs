@@ -189,8 +189,7 @@ getAliases ids =
 
   where
     expand :: (Identifier,Metadata) -> (Identifier,[FilePath])
-    expand (a,x) = let x' = maybe [] read $ M.lookup "aliases" x
-                   in (a,x')
+    expand = second (maybe [] read . M.lookup "aliases")
 
     idToPath :: Identifier -> FilePath
     idToPath = stripPostDate . toFilePath
