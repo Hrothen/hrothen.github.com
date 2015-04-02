@@ -17,7 +17,7 @@ import           Hakyll
 
 --------------------------------------------------------------------------------
 siteConfig :: Configuration
-siteConfig = defaultConfiguration{ deployCommand = "./deploy.sh" }
+siteConfig = defaultConfiguration{ deployCommand = "bash deploy.sh deploy" }
 
 --------------------------------------------------------------------------------
 main :: IO ()
