@@ -3,7 +3,7 @@
 import           Control.Applicative (Alternative(..))
 import           Control.Arrow (first, second)
 import           Data.Functor ((<$>))
-import           Data.List (stripPrefix, find)
+import           Data.List (stripPrefix, find, elemIndex)
 import           Data.Maybe (fromJust)
 import           Data.Monoid (mappend)
 
@@ -167,10 +167,14 @@ nextPostURL = findPostUrl lookupNext
 
 
 lookupPrev :: Eq a => [a] -> a -> Maybe a
-lookupPrev ids id = lookup id $ zip (tail ids) ids
+lookupPrev ids id = case elemIndex id ids of
+                        Just i -> if i >= (length ids - 1) then Nothing else Just $ ids!!(i+1)
+                        Nothing -> Nothing
 
 lookupNext :: Eq a => [a] -> a -> Maybe a
-lookupNext ids id = lookup id $ zip ids (tail ids)
+lookupNext ids id = case elemIndex id ids of
+                        Just i -> if i <= 0 then Nothing else Just $ ids!!(i-1)
+                        Nothing -> Nothing
 
 
 ----------------------------------------------------------------------------
