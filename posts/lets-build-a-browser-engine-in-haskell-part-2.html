@@ -1,0 +1,274 @@
+<?xml version="1.0" encoding="UTF-8" ?>
+<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd">
+<html xmlns="http://www.w3.org/1999/xhtml" xml:lang="en" lang="en">
+    <head>
+        <meta http-equiv="Content-Type" content="text/html; charset=UTF-8" />
+        <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+        <title>Also Sprach Leif - Let's Build a Browser Engine in Haskell: Part 2</title>
+        <link rel="stylesheet" type="text/css" href="../css/default.css" />
+    </head>
+    <body>
+        <header>
+            <div id="logo">
+                <a href="../">Also Sprach Leif</a>
+            </div>
+            <nav>
+                <a href="../">Home</a>
+                <a href="../about.html">About</a>
+                <a href="../archive.html">Archive</a>
+                <a href="../atom.xml">Feed</a>
+            </nav>
+            <div id="tagline">
+                Math, Programming, Games, and whatever else I feel like
+            </div>
+        </header>
+
+        <div id="content">
+            <h1>Let's Build a Browser Engine in Haskell: Part 2</h1>
+
+            <article>
+    <div class="info">
+        Posted on September  8, 2014
+        
+    </div>
+    
+    <p>Ok, so in <a href="lets-build-a-browser-engine-in-haskell.html">part 1</a> we built a set of types to use for a really basic DOM. In part 2, we’ll write a simple html parser (actually we’ll write two) that only supports Balanced Tags, Attributes with quoted values, and Text nodes.</p>
+<h1 id="why-two-parsers">Why two parsers?</h1>
+<p>First, we’re going to write a straight port of Matt’s Rust parser, pretty much just to see how it goes. Then we’re gonna turn around write a more Haskell flavored parser, since writing parsers is something we can do really really well in Haskell. In this way we explore the similarities and differences between languages, as well as the design process that led to today’s modern applicative parsing libraries.</p>
+<p>Ok no that’s not true, I wrote the whole first parser at two in the morning before I remembered that Parsec is part of the Haskell Platform, so now you get to experience it too (to be fair, it’s a pretty decent example of using monad transformers, I feel).</p>
+<h1 id="parser-1-port-from-rust">Parser 1: port from Rust</h1>
+<p>First things first, we’re switching from using <code>String</code>s, which are just lists of <code>Char</code>s to <code>Text</code>s which are 1) designed to deal with all the different utf formats and 2) way faster. A nice side effect of this is that we can treat everything like regular <code>Char</code>s and the compiler will figure it out for us. If you’re following along, go back and update your types in Dom.hs.</p>
+<p>First we’ll create a Parser type, in Robinson the Parser consists of a vector and an index, but for our purposes it’ll be better to consume the <code>Text</code> as we read it. We don’t have to worry about accidentally destroying it, and in theory the compiler should fuse everything together into a single traversal.</p>
+<pre class="sourceCode haskell"><code class="sourceCode haskell"><span class="co">-- here's all the imports for the file</span>
+<span class="ot">{-# LANGUAGE OverloadedStrings #-}</span> <span class="co">-- this lets the compiler turn string literals into Texts</span>
+
+<span class="kw">import </span><span class="dt">Data.Char</span> (isAlphaNum)
+<span class="kw">import </span><span class="dt">Control.Monad</span> (liftM)
+
+<span class="kw">import </span><span class="dt">Control.Monad.State.Lazy</span> (<span class="dt">StateT</span>(..), evalState, get, put)
+<span class="kw">import </span><span class="dt">Control.Monad.Except</span> (<span class="dt">ExceptT</span>(..), runExceptT, throwError)
+<span class="kw">import </span><span class="dt">Control.Monad.Identity</span>
+
+<span class="kw">import qualified</span> <span class="dt">Data.HashMap.Strict</span> <span class="kw">as</span> <span class="dt">HM</span>
+<span class="kw">import qualified</span> <span class="dt">Data.Text</span> <span class="kw">as</span> <span class="dt">T</span>
+
+<span class="kw">import </span><span class="dt">Dom</span>
+
+
+<span class="kw">data</span> <span class="dt">Parser</span> <span class="fu">=</span> <span class="dt">Parser</span> <span class="dt">T.Text</span>
+
+<span class="kw">type</span> <span class="dt">ParserS</span> <span class="fu">=</span> <span class="dt">ExceptT</span> <span class="dt">T.Text</span> (<span class="dt">StateT</span> <span class="dt">Parser</span> <span class="dt">Identity</span>)</code></pre>
+<p>We’ve defined a <code>Parser</code> as just a wrapper around a <code>Text</code>, and a <code>ParserS</code> monad transformer stack where all our parsing code will live. If you’re not familiar with monad transformers you should go read <a href="http://www.grabmueller.de/martin/www/pub/Transformers.pdf">Monad Transformers Step by Step</a> which, despite being a .pdf file, is actually a short introductory tutorial. To read this post though, all you need to know is that <code>ParserS</code> basically functions as a <code>State a</code> and an <code>Either T.Text a</code> at the same time, so we can carry our <code>Parser</code> along and also toss up an error if something goes wrong.</p>
+<p>We’ll also define a few convenience functions for working with the <code>Parser</code>.</p>
+<pre class="sourceCode haskell"><code class="sourceCode haskell">runParserS p s <span class="fu">=</span> evalState (runExceptT p) s
+
+<span class="ot">nextchr ::</span> <span class="dt">Parser</span> <span class="ot">-&gt;</span> <span class="dt">Char</span>
+nextchr (<span class="dt">Parser</span> s) <span class="fu">=</span> T.head s <span class="co">-- errors if called when string is empty</span>
+
+<span class="ot">startsWith ::</span> <span class="dt">Parser</span> <span class="ot">-&gt;</span> <span class="dt">T.Text</span> <span class="ot">-&gt;</span> <span class="dt">Bool</span>
+startsWith (<span class="dt">Parser</span> input) s <span class="fu">=</span> s <span class="ot">`T.isPrefixOf`</span> input
+
+<span class="ot">eof ::</span> <span class="dt">Parser</span> <span class="ot">-&gt;</span> <span class="dt">Bool</span>
+eof (<span class="dt">Parser</span> input) <span class="fu">=</span> T.null input</code></pre>
+<p><code>runParserS</code> extracts our results from the monad transformer stack, the other three functions are just the same as the equivalent Rust versions, except that we’re always looking at the head of our <code>Text</code>.</p>
+<p>The worker functions</p>
+<pre class="sourceCode haskell"><code class="sourceCode haskell"><span class="ot">consumeChar ::</span> <span class="dt">ParserS</span> <span class="dt">Char</span>
+consumeChar <span class="fu">=</span> <span class="kw">do</span>
+    (<span class="dt">Parser</span> inp) <span class="ot">&lt;-</span> get
+    <span class="kw">case</span> T.uncons inp <span class="kw">of</span>
+      <span class="dt">Nothing</span> <span class="ot">-&gt;</span> throwError <span class="st">&quot;ERROR: unexpectedly reached end of file&quot;</span>
+      <span class="dt">Just</span> (c,inp') <span class="ot">-&gt;</span> <span class="kw">do</span>
+        put (<span class="dt">Parser</span> inp')
+        return c
+
+<span class="ot">consumeWhile ::</span> (<span class="dt">Char</span> <span class="ot">-&gt;</span> <span class="dt">Bool</span>) <span class="ot">-&gt;</span> <span class="dt">ParserS</span> <span class="dt">T.Text</span>
+consumeWhile f <span class="fu">=</span> <span class="kw">do</span>
+    <span class="dt">Parser</span> input <span class="ot">&lt;-</span> get
+    <span class="kw">let</span> (s,input') <span class="fu">=</span> T.span f input
+    put <span class="fu">$</span> <span class="dt">Parser</span> input'
+    return s
+
+<span class="ot">consumeWhitespace ::</span> <span class="dt">ParserS</span> <span class="dt">T.Text</span>
+consumeWhitespace <span class="fu">=</span> consumeWhile (<span class="fu">==</span><span class="ch">' '</span>)</code></pre>
+<p><code>get</code> and <code>put</code> access the <code>ParserS</code>’s state, and <code>throwError</code> will short circuit the computation with a <code>Left</code> value. We lose a bit over Rust here in needing to explicitly handle trying to read an empty <code>Text</code> where Rust would have simply tossed up an error. Speaking of errors, Robinson doesn’t really have any error handling here, but it <em>is</em> liberally sprinkled with <code>assert!</code>s which, unlike every other language I’ve seen that has them, also run in non-debug code (apparently this is being changed soon). It’s convenient to define our own equivalent, which we’ll call <code>assert</code> as well.</p>
+<pre class="sourceCode haskell"><code class="sourceCode haskell"><span class="ot">assert ::</span> <span class="dt">T.Text</span> <span class="ot">-&gt;</span> <span class="dt">Bool</span> <span class="ot">-&gt;</span> <span class="dt">ParserS</span> ()
+assert s b <span class="fu">=</span> <span class="kw">if</span> b <span class="kw">then</span> return () <span class="kw">else</span> throwError s</code></pre>
+<p>Now we can nicely write checks on one line.</p>
+<p>We gain a lot of brevity for short functions:</p>
+<pre class="sourceCode haskell"><code class="sourceCode haskell"><span class="ot">parseTagName ::</span> <span class="dt">ParserS</span> <span class="dt">T.Text</span>
+parseTagName <span class="fu">=</span> consumeWhile isAlphaNum
+
+
+<span class="ot">parseNode ::</span> <span class="dt">ParserS</span> <span class="dt">Node</span>
+parseNode <span class="fu">=</span> <span class="kw">do</span>
+    p <span class="ot">&lt;-</span> get
+    <span class="kw">if</span> nextchr p <span class="fu">==</span> <span class="ch">'&lt;'</span> <span class="kw">then</span> parseElement <span class="kw">else</span> parseText
+
+<span class="ot">parseText ::</span> <span class="dt">ParserS</span> <span class="dt">Node</span>
+parseText <span class="fu">=</span> liftM Dom.text <span class="fu">$</span> consumeWhile (<span class="fu">/=</span><span class="ch">'&lt;'</span>)</code></pre>
+<p>Longer functions look fairly similar to their Rust counterparts, albeit a little easier on the eyes. I’m not totally happy with how the asserts look, but it’s not incredibly hard to follow the flow of the function.</p>
+<pre class="sourceCode haskell"><code class="sourceCode haskell"><span class="ot">parseElement ::</span> <span class="dt">ParserS</span> <span class="dt">Node</span>
+parseElement <span class="fu">=</span> <span class="kw">do</span>
+    <span class="co">-- open tag</span>
+    consumeChar <span class="fu">&gt;&gt;=</span> assert <span class="st">&quot;missing &lt; in open tag&quot;</span> <span class="fu">.</span> (<span class="fu">==</span><span class="ch">'&lt;'</span>)
+    tag <span class="ot">&lt;-</span> parseTagName
+    attrs <span class="ot">&lt;-</span> parseAttributes
+    consumeChar <span class="fu">&gt;&gt;=</span> assert <span class="st">&quot;missing &gt; in open tag&quot;</span> <span class="fu">.</span> (<span class="fu">==</span><span class="ch">'&gt;'</span>)
+    <span class="co">-- contents</span>
+    children <span class="ot">&lt;-</span> parseNodes
+    <span class="co">--end tag</span>
+    consumeChar  <span class="fu">&gt;&gt;=</span> assert <span class="st">&quot;missing &lt; in close tag&quot;</span> <span class="fu">.</span> (<span class="fu">==</span><span class="ch">'&lt;'</span>)
+    consumeChar  <span class="fu">&gt;&gt;=</span> assert <span class="st">&quot;missing / in close tag&quot;</span> <span class="fu">.</span> (<span class="fu">==</span><span class="ch">'/'</span>)
+    parseTagName <span class="fu">&gt;&gt;=</span> assert <span class="st">&quot;end tag doesn't match start tag&quot;</span> <span class="fu">.</span> (<span class="fu">==</span>tag)
+    consumeChar  <span class="fu">&gt;&gt;=</span> assert <span class="st">&quot;missing &gt; in close tag&quot;</span> <span class="fu">.</span> (<span class="fu">==</span><span class="ch">'&gt;'</span>)
+
+    return <span class="fu">$</span> Dom.elem tag attrs children
+
+
+<span class="ot">parseAttr ::</span> <span class="dt">ParserS</span> (<span class="dt">T.Text</span>, <span class="dt">T.Text</span>)
+parseAttr <span class="fu">=</span> <span class="kw">do</span>
+    name <span class="ot">&lt;-</span> parseTagName
+    consumeChar <span class="fu">&gt;&gt;=</span> assert <span class="st">&quot;missing =&quot;</span> <span class="fu">.</span> (<span class="fu">==</span><span class="ch">'='</span>)
+    value <span class="ot">&lt;-</span> parseAttrValue
+    return (name,value)
+
+<span class="ot">parseAttrValue ::</span> <span class="dt">ParserS</span> <span class="dt">T.Text</span>
+parseAttrValue <span class="fu">=</span> <span class="kw">do</span>
+    open <span class="ot">&lt;-</span> consumeChar
+    assert <span class="st">&quot;invalid open&quot;</span> (open <span class="fu">==</span> <span class="ch">'\&quot;'</span> <span class="fu">||</span> open <span class="fu">==</span> <span class="ch">'\''</span>)
+    val <span class="ot">&lt;-</span> consumeWhile (<span class="fu">/=</span>open)
+    consumeChar <span class="fu">&gt;&gt;=</span> assert <span class="st">&quot;invalid close&quot;</span> <span class="fu">.</span> (<span class="fu">==</span>open)
+    return val
+
+<span class="ot">parseAttributes ::</span> <span class="dt">ParserS</span> <span class="dt">AttrMap</span>
+parseAttributes <span class="fu">=</span> parseAttributes' HM.empty
+  <span class="kw">where</span>
+    parseAttributes' attrs <span class="fu">=</span> <span class="kw">do</span>
+        consumeWhitespace
+        p <span class="ot">&lt;-</span> get
+        <span class="kw">if</span> nextchr p <span class="fu">==</span> <span class="ch">'&gt;'</span> <span class="kw">then</span> return attrs
+        <span class="kw">else</span> <span class="kw">do</span>
+            (name,val) <span class="ot">&lt;-</span> parseAttr
+            parseAttributes' <span class="fu">$</span> HM.insert name val attrs
+
+
+<span class="ot">parseNodes ::</span> <span class="dt">ParserS</span> [<span class="dt">Node</span>]
+parseNodes <span class="fu">=</span> parseNodes' []
+  <span class="kw">where</span>
+    parseNodes' nodes <span class="fu">=</span> <span class="kw">do</span>
+        consumeWhitespace
+        p <span class="ot">&lt;-</span> get
+        <span class="kw">if</span> eof p <span class="fu">||</span> p <span class="ot">`startsWith`</span> <span class="st">&quot;&lt;/&quot;</span>
+        <span class="kw">then</span> return nodes
+        <span class="kw">else</span> parseNode <span class="fu">&gt;&gt;=</span> parseNodes' <span class="fu">.</span> (nodes<span class="fu">++</span>) <span class="fu">.</span> (<span class="fu">:</span>[])  <span class="co">--slow for big DOM</span></code></pre>
+<p>Finally, we’ll write the function that actually parses an HTML string.</p>
+<pre class="sourceCode haskell"><code class="sourceCode haskell"><span class="ot">parseHtml ::</span> <span class="dt">T.Text</span> <span class="ot">-&gt;</span> <span class="dt">Either</span> <span class="dt">T.Text</span> <span class="dt">Node</span>
+parseHtml s <span class="fu">=</span> <span class="kw">case</span> runParserS parseNodes (<span class="dt">Parser</span> s) <span class="kw">of</span>
+              <span class="dt">Left</span> err <span class="ot">-&gt;</span> <span class="dt">Left</span> err
+              <span class="dt">Right</span> nodes <span class="ot">-&gt;</span> <span class="dt">Right</span> <span class="fu">$</span>
+                <span class="kw">if</span> length nodes <span class="fu">==</span> <span class="dv">1</span>
+                <span class="kw">then</span> head nodes
+                <span class="kw">else</span> Dom.elem <span class="st">&quot;html&quot;</span> HM.empty nodes</code></pre>
+<p>So, that’s the whole parser in only about 135 lines of code, which isn’t bad. Of course, this implementation is fragile, overly verbose, and I suspect that the wrapper types might prevent proper stream fusion on the <code>Text</code> functions (I’m not super familiar with the details of Haskell stream fusion).</p>
+<h1 id="part-2-the-combinator-parser">Part 2: The Combinator Parser</h1>
+<p>Fortunately we have the <a href="http://hackage.haskell.org/package/parsec-3.1.5">Parsec</a> library, which will allow us to write a much nicer parser in about half the space (and yes I know, brevity tends to lead to the unreadable gibberish Haskell is famous for, but truest me). Parsec is not the fastest parser library, (that would be <a href="http://hackage.haskell.org/package/attoparsec">attoparsec</a>, because if there is one thing all programmers love, it is puns) but it is the most robust, and it’s really easy to use. Most importantly, attoparsec produces truly confusing error messages, whereas Parsec will actually allow us to add our own if we want (though today I won’t).</p>
+<p>Our imports list is slightly shorter:</p>
+<pre class="sourceCode haskell"><code class="sourceCode haskell"><span class="ot">{-# LANGUAGE OverloadedStrings, NoMonomorphismRestriction #-}</span>
+<span class="kw">module</span> <span class="dt">HTML.Parsec</span>
+    ( parseHtml
+    ) <span class="kw">where</span>
+
+<span class="kw">import </span><span class="dt">Control.Monad</span> (liftM)
+
+<span class="kw">import qualified</span> <span class="dt">Data.Text</span> <span class="kw">as</span> <span class="dt">T</span>
+<span class="kw">import </span><span class="dt">Text.Parsec</span>
+<span class="kw">import </span><span class="dt">Text.Parsec.Text</span>
+
+<span class="kw">import qualified</span> <span class="dt">Data.HashMap.Strict</span> <span class="kw">as</span> <span class="dt">HM</span>
+
+<span class="kw">import </span><span class="dt">Dom</span></code></pre>
+<p>And our top level function is all but identical:</p>
+<pre class="sourceCode haskell"><code class="sourceCode haskell"><span class="ot">parseHtml ::</span> <span class="dt">T.Text</span> <span class="ot">-&gt;</span> <span class="dt">Either</span> <span class="dt">ParseError</span> <span class="dt">Node</span>
+parseHtml s <span class="fu">=</span> <span class="kw">case</span> parse parseNodes <span class="st">&quot;&quot;</span> s <span class="kw">of</span>
+              <span class="dt">Left</span> err <span class="ot">-&gt;</span> <span class="dt">Left</span> err
+              <span class="dt">Right</span> nodes <span class="ot">-&gt;</span> <span class="dt">Right</span> <span class="fu">$</span>
+                <span class="kw">if</span> length nodes <span class="fu">==</span> <span class="dv">1</span>
+                <span class="kw">then</span> head nodes
+                <span class="kw">else</span> Dom.elem <span class="st">&quot;html&quot;</span> HM.empty nodes</code></pre>
+<p>The only difference here is our call to <code>parse</code> instead of <code>runParserS</code>. The underlying monad in Parsec is actually pretty much the same as our <code>ParserS</code> but with a bit more. It’s also a monad transformer, so although we’re not going to use it today, we could add even more monadic features if we needed to.</p>
+<p>When working with Parsec it’s convenient to build the parser from the top down, our first function is simple enough:</p>
+<pre class="sourceCode haskell"><code class="sourceCode haskell">parseNodes <span class="fu">=</span> manyTill parseNode eof</code></pre>
+<p>That’ll just keep parsing Nodes until the parser fails or we hit the end of the file.</p>
+<p><code>parseNode</code> is easy too, just parse a <code>Text</code> or an <code>Element</code>:</p>
+<pre class="sourceCode haskell"><code class="sourceCode haskell">parseNode <span class="fu">=</span> parseElement <span class="fu">&lt;|&gt;</span> parseText</code></pre>
+<p>How do we parse a <code>Text</code>? Just keep taking characters until we hit a ‘&lt;’</p>
+<pre class="sourceCode haskell"><code class="sourceCode haskell">parseText <span class="fu">=</span> liftM (Dom.text <span class="fu">.</span> T.pack) <span class="fu">$</span> many (noneOf <span class="st">&quot;&lt;&quot;</span>)</code></pre>
+<p>What about an <code>Element</code>? That’s a bit longer, but still pretty readable.</p>
+<pre class="sourceCode haskell"><code class="sourceCode haskell">parseElement <span class="fu">=</span> <span class="kw">do</span>
+    <span class="co">-- opening tag</span>
+    (tag, attrs) <span class="ot">&lt;-</span> between (char <span class="ch">'&lt;'</span>) (char <span class="ch">'&gt;'</span>) tagData
+    <span class="co">-- contents</span>
+    children <span class="ot">&lt;-</span> parseChildren
+    <span class="co">-- closing tag</span>
+    string <span class="fu">$</span> tag <span class="fu">++</span> <span class="st">&quot;&gt;&quot;</span> <span class="co">-- &quot;&lt;/&quot; is consumed by parseChildren, maybe bad form?</span>
+    return <span class="fu">$</span> Dom.elem (T.pack tag) attrs children
+
+
+<span class="co">-- the try combinator won't consume input if it fails, so the next parser will get that input</span>
+<span class="co">-- otherwise if string &quot;&lt;/&quot; matched '&lt;' but not '/' the next parser would start at '/'</span>
+
+parseChildren <span class="fu">=</span> spaces <span class="fu">&gt;&gt;</span> manyTill parseChild end
+  <span class="kw">where</span>
+    end <span class="fu">=</span> eof <span class="fu">&lt;|&gt;</span> (try (string <span class="st">&quot;&lt;/&quot;</span>) <span class="fu">&gt;&gt;</span> return ())
+
+    parseChild <span class="fu">=</span> spacesAfter parseNode
+
+
+tagData <span class="fu">=</span> <span class="kw">do</span>
+    t <span class="ot">&lt;-</span> tagName
+    attrs <span class="ot">&lt;-</span> attributes
+    return (t,attrs)
+
+tagName <span class="fu">=</span> many1 alphaNum
+
+<span class="co">--this is safe because attribute will fail without consuming on '&gt;''</span>
+attributes <span class="fu">=</span> liftM HM.fromList <span class="fu">$</span> spaces <span class="fu">&gt;&gt;</span> many (spacesAfter attribute)
+
+attribute <span class="fu">=</span> <span class="kw">do</span>
+    name <span class="ot">&lt;-</span> tagName
+    char <span class="ch">'='</span>
+    open <span class="ot">&lt;-</span> char <span class="ch">'\&quot;'</span> <span class="fu">&lt;|&gt;</span> char <span class="ch">'\''</span>
+    value <span class="ot">&lt;-</span> manyTill anyChar (try <span class="fu">$</span> char open)
+    return (T.pack name, T.pack value)
+
+
+<span class="co">-- run parser p and then strip the trailing spaces, returning the result of p.</span>
+spacesAfter p <span class="fu">=</span> p <span class="fu">&lt;*</span> spaces</code></pre>
+<p>That’s the whole thing.</p>
+<p>One thing I like about Parsec is that it’s very easy to write short functions with readable names, and then compose them into larger parsers that are still really easy to read. Moving forward, I’m just going to use Parsec for any other parsing in this project, without messing around with the <code>ParserS</code> (I’ve left it in the repo though).</p>
+<p>That’s all for today, I was planning to write the CSS parser next time, but now I’m thinking I might take a break and set up a test framework first. We’ll see where that goes.</p>
+<p>The source for this post is <a href="https://github.com/Hrothen/Hubert/tree/master/src/Html">here</a>. As per usual, the source for Robinson is <a href="https://github.com/mbrubeck/robinson">here</a>.</p>
+    
+    <nav id="postNav">
+        
+            <a href="../posts/lets-build-a-browser-engine-in-haskell-setting-up-tests.html" style="float:left;">Previous post</a>
+        
+        
+            <a href="../posts/lets-build-a-browser-engine-in-haskell.html" style="float:right; text-align: right;">Next post</a>
+        
+    </nav>
+</article>
+        </div>
+        <footer>
+            <div style="float: left; text-align: left;">
+                &copy;Leif Grele
+                <br>
+                github.com/hrothen
+            </div>
+            <div>
+                Site proudly generated by
+                <a href="http://jaspervdj.be/hakyll">Hakyll</a>
+            </div>
+        </footer>
+    </body>
+</html>

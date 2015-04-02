@@ -1,0 +1,1880 @@
+<?xml version="1.0" encoding="utf-8"?>
+<feed xmlns="http://www.w3.org/2005/Atom">
+    <title>Also Sprach Leif</title>
+    <link href="http://hrothen.github.com/atom.xml" rel="self" />
+    <link href="http://hrothen.github.com" />
+    <id>http://hrothen.github.com/atom.xml</id>
+    <author>
+        <name>Leif Grele</name>
+        <email></email>
+    </author>
+    <updated>2015-01-20T00:00:00Z</updated>
+    <entry>
+    <title>Let's Write a Browser Engine in Haskell: a lens interlude</title>
+    <link href="http://hrothen.github.com/posts/lets-write-a-browser-engine-in-haskell-a-lens-interlude.html" />
+    <id>http://hrothen.github.com/posts/lets-write-a-browser-engine-in-haskell-a-lens-interlude.html</id>
+    <published>2015-01-20T00:00:00Z</published>
+    <updated>2015-01-20T00:00:00Z</updated>
+    <summary type="html"><![CDATA[<article>
+    <div class="info">
+        Posted on January 20, 2015
+        
+    </div>
+    
+    <p>This post doesn’t cover any new functionality, instead, we’ll be revisiting some old code and refactoring it to be less awful. In particular, we’ll be using <a href="http://ekmett.github.io/lens/index.html">lenses</a> make our nested datatypes less annoying to work with. I’ve tried to record every change I made, but it’s possible I missed something, if you have trouble compiling, look at the github changelog to try to find the issue, and also let me know so I can update this article.</p>
+<h2 id="a-couple-notes-on-lenses">A couple notes on lenses</h2>
+<p>First: I am not going to attempt to explain lenses in any detail. <a href="http://unbui.lt/#!/post/haskell-another-lens-tutorial">This tutorial</a> is a decent introduction to what lenses are, but for our purposes it’s enough to know that lenses look and act a lot like accessors in other languages. Lenses compose “backwards” so for example <code>(content . height)</code> will access the height element of the content element of a <code>Dimensions</code>.</p>
+<p>Second: Lenses are a pain to read, partly because they compose backwards but also because the <code>lens</code> library includes operators for every situation Edward Kmett could think of (over 100 operators, including such gems as the squid operator <code>(&lt;&lt;&lt;&gt;~)</code> and the cartoon invective operator <code>(^@!?)</code>). We’ll try to avoid readability issues by using a really minimal set of lens functions and operators, namely: <code>(^.)</code> which gives the value of the field a lens accesses, <code>(.~)</code> which assigns a value to the field a lens accesses, <code>(.=)</code> which is <code>(.~)</code> but for the state inside a <code>State</code> monad, <code>(&amp;)</code> which is just <code>flip $</code> and is used to chain lens operations, <code>(&amp;~)</code> which is <code>(&amp;)</code> inside a <code>State</code> monad, and <code>zoom</code> which “zooms in” on a lens, so if we’re going to perform several operations on the same field, we don’t need to keep writing it.</p>
+<h2 id="adding-lenses-to-types">Adding Lenses to Types</h2>
+<p>The <code>lens</code> library conveniently provides a template haskell macro to create lenses for a structure, all we need to do is preface all fields we want to derive a lens for with <code>_</code>, and then call <code>makeLenses ''&lt;type name&gt;</code>. The ability to automatically derive lenses is the main reason we’re using the <code>lens</code> library instead of just writing our own simple lenses, if you don’t want to include all the dependencies <code>lens</code> has, you can also use <code>lens-family</code> which has all the operators we’ll be using.</p>
+<p>For starters, we’ll derive lenses for <code>NTree</code> in <code>Dom.hs</code></p>
+<pre class="sourceCode haskell"><code class="sourceCode haskell"><span class="co">-- I&#39;m only showing lines that have changed</span>
+
+<span class="co">-- It&#39;s not actually mentioned on the page, probably because they thought it</span>
+<span class="co">-- was obvious, but you need the TemplateHaskell pragma to use makeLenses</span>
+<span class="ot">{-# LANGUAGE OverloadedStrings, FlexibleInstances, TemplateHaskell#-}</span>
+
+<span class="kw">import </span><span class="dt">Control.Lens</span>
+
+<span class="kw">data</span> <span class="dt">NTree</span> a <span class="fu">=</span> <span class="dt">NTree</span> { _<span class="ot">root ::</span> a, _<span class="ot">children ::</span> [<span class="dt">NTree</span> a] }
+
+makeLenses <span class="ch">&#39;&#39;</span><span class="dt">NTree</span></code></pre>
+<p>Most of our work is going to be in <code>Layout.hs</code> which will look a lot nice by the time we finish.</p>
+<pre class="sourceCode haskell"><code class="sourceCode haskell"><span class="ot">{-#LANGUAGE BangPatterns, OverloadedStrings, TemplateHaskell#-}</span>
+
+<span class="kw">import </span><span class="dt">Data.Function</span> (on)
+
+<span class="kw">import </span><span class="dt">Control.Lens</span> <span class="kw">hiding</span> (children)
+
+<span class="kw">data</span> <span class="dt">Rect</span> <span class="fu">=</span> <span class="dt">Rect</span> { _<span class="ot">x      ::</span> <span class="dt">Float</span>
+                 , _<span class="ot">y      ::</span> <span class="dt">Float</span>
+                 , _<span class="ot">width  ::</span> <span class="dt">Float</span>
+                 , _<span class="ot">height ::</span> <span class="dt">Float</span> }
+
+<span class="kw">data</span> <span class="dt">Dimensions</span> <span class="fu">=</span> <span class="dt">Dimensions</span> { _<span class="ot">content ::</span> <span class="dt">Rect</span>
+                             , _<span class="ot">padding ::</span> <span class="dt">EdgeSize</span>
+                             , _<span class="ot">border  ::</span> <span class="dt">EdgeSize</span>
+                             , _<span class="ot">margin  ::</span> <span class="dt">EdgeSize</span> }
+
+<span class="kw">data</span> <span class="dt">EdgeSize</span> <span class="fu">=</span> <span class="dt">EdgeSize</span> { _<span class="ot">left   ::</span> <span class="dt">Float</span>
+                         , _<span class="ot">right  ::</span> <span class="dt">Float</span>
+                         , _<span class="ot">top    ::</span> <span class="dt">Float</span>
+                         , _<span class="ot">bottom ::</span> <span class="dt">Float</span> }
+
+makeLenses <span class="ch">&#39;&#39;</span><span class="dt">Rect</span>
+makeLenses <span class="ch">&#39;&#39;</span><span class="dt">Dimensions</span>
+makeLenses <span class="ch">&#39;&#39;</span><span class="dt">EdgeSize</span>
+
+
+<span class="co">-- here we use (.~) to pass contBlock with its height value set to 0</span>
+<span class="ot">layoutTree ::</span> <span class="dt">StyledNode</span> <span class="ot">-&gt;</span> <span class="dt">Dimensions</span> <span class="ot">-&gt;</span> <span class="dt">Either</span> <span class="dt">T.Text</span> <span class="dt">LayoutBox</span>
+layoutTree root contBlock <span class="fu">=</span> buildLayoutTree root <span class="fu">&gt;&gt;=</span>
+                            flip layout (contBlock <span class="fu">&amp;</span> content<span class="fu">.</span>height<span class="fu">.~</span><span class="dv">0</span>)
+
+
+<span class="co">-- only one line has changed in buildLayoutTree</span>
+<span class="ot">buildLayoutTree ::</span> <span class="dt">StyledNode</span> <span class="ot">-&gt;</span> <span class="dt">Either</span> <span class="dt">T.Text</span> <span class="dt">LayoutBox</span>
+<span class="fu">...</span>
+anonify <span class="fu">=</span> concatMap mergeInlines <span class="fu">.</span> groupBy ((<span class="fu">&amp;&amp;</span>) <span class="ot">`on`</span> isInline)
+<span class="fu">...</span>
+
+
+<span class="co">-- here we use a lens to get rid of the ugly nested pattern match</span>
+<span class="ot">layout ::</span> <span class="dt">LayoutBox</span> <span class="ot">-&gt;</span> <span class="dt">Dimensions</span> <span class="ot">-&gt;</span> <span class="dt">Either</span> <span class="dt">T.Text</span> <span class="dt">LayoutBox</span>
+layout l contBlock <span class="fu">=</span> <span class="kw">case</span> l<span class="fu">^.</span>root<span class="fu">.</span>_2 <span class="kw">of</span>
+    <span class="dt">BlockNode</span>  _   <span class="ot">-&gt;</span> layoutBlock contBlock l
+    <span class="dt">InlineNode</span> _   <span class="ot">-&gt;</span> undefined
+    <span class="dt">AnonymousBlock</span> <span class="ot">-&gt;</span> undefined
+
+
+<span class="co">-- the next few function have changed significantly, and several parts</span>
+<span class="co">-- have been pulled out into their own things</span>
+
+auto <span class="fu">=</span> <span class="dt">Keyword</span> <span class="st">&quot;auto&quot;</span>
+zero <span class="fu">=</span> <span class="dt">Length</span> <span class="dv">0</span> <span class="dt">Px</span>
+
+
+<span class="ot">calcWidth ::</span> <span class="dt">Dimensions</span> <span class="ot">-&gt;</span> <span class="dt">LayoutBox</span> <span class="ot">-&gt;</span> <span class="dt">Either</span> <span class="dt">T.Text</span> <span class="dt">LayoutBox</span>
+calcWidth contBlock rt <span class="fu">=</span> <span class="kw">do</span>
+    style <span class="ot">&lt;-</span> getStyledElem rt
+    vals  <span class="ot">&lt;-</span> lookupSideVals rt
+    <span class="kw">let</span> w               <span class="fu">=</span> fromMaybe auto <span class="fu">$</span> value style <span class="st">&quot;width&quot;</span>
+        total           <span class="fu">=</span> sum <span class="fu">$</span> map toPx (w<span class="fu">:</span>vals)
+        underflow       <span class="fu">=</span> contBlock<span class="fu">^.</span>content<span class="fu">.</span>width <span class="fu">-</span> total
+        (margins,vals&#39;) <span class="fu">=</span> splitAt <span class="dv">2</span> vals
+        
+        (w&#39;,ml&#39;,mr&#39;) <span class="fu">=</span> checkUnderflow w underflow <span class="fu">$</span> checkAutoMargins margins w total
+
+        [w&#39;&#39;,ml,mr,blw,brw,plf,prt] <span class="fu">=</span> map toPx (w&#39;<span class="fu">:</span>ml&#39;<span class="fu">:</span>mr&#39;<span class="fu">:</span>vals&#39;)
+
+<span class="co">-- did you know you can use semicolons in haskell?</span>
+    return <span class="fu">$</span> rt <span class="fu">&amp;~</span> zoom (root <span class="fu">.</span> _1) (<span class="kw">do</span>
+        content<span class="fu">.</span>width <span class="fu">.=</span> w&#39;&#39;
+        padding<span class="fu">.</span>left  <span class="fu">.=</span> plf; padding<span class="fu">.</span>right <span class="fu">.=</span> prt
+        border<span class="fu">.</span>left   <span class="fu">.=</span> blw; border<span class="fu">.</span>right  <span class="fu">.=</span> brw
+        margin<span class="fu">.</span>left   <span class="fu">.=</span> ml ; margin<span class="fu">.</span>right  <span class="fu">.=</span> mr)
+
+  <span class="kw">where</span>
+    checkAutoMargins [x,y] w total
+          <span class="fu">|</span> w <span class="fu">/=</span> auto <span class="fu">&amp;&amp;</span> total <span class="fu">&gt;</span> contBlock<span class="fu">^.</span>content<span class="fu">.</span>width <span class="fu">=</span> (check x,check y)
+          <span class="fu">|</span> otherwise <span class="fu">=</span> (x,y)
+        <span class="kw">where</span> check a <span class="fu">=</span> <span class="kw">if</span> a <span class="fu">==</span> auto <span class="kw">then</span> zero <span class="kw">else</span> a
+
+    checkUnderflow w uflow (mlf,mrt) <span class="fu">=</span> <span class="kw">case</span> (w <span class="fu">==</span> auto, mlf <span class="fu">==</span> auto, mrt <span class="fu">==</span> auto) <span class="kw">of</span>
+        (<span class="dt">False</span>,<span class="dt">False</span>,<span class="dt">False</span>) <span class="ot">-&gt;</span> (w , mlf, <span class="dt">Length</span> (toPx mrt <span class="fu">+</span> uflow) <span class="dt">Px</span>)
+        (<span class="dt">False</span>,<span class="dt">False</span>,<span class="dt">True</span>)  <span class="ot">-&gt;</span> (w , mlf, <span class="dt">Length</span> uflow <span class="dt">Px</span>)
+        (<span class="dt">False</span>,<span class="dt">True</span>,<span class="dt">False</span>)  <span class="ot">-&gt;</span> (w , <span class="dt">Length</span> uflow <span class="dt">Px</span>    , mrt)
+        (<span class="dt">False</span>,<span class="dt">True</span>,<span class="dt">True</span>)   <span class="ot">-&gt;</span> (w , <span class="dt">Length</span> (uflow<span class="fu">/</span><span class="dv">2</span>) <span class="dt">Px</span>, <span class="dt">Length</span> (uflow<span class="fu">/</span><span class="dv">2</span>) <span class="dt">Px</span>)
+        (<span class="dt">True</span>,_,_)          <span class="ot">-&gt;</span>
+            <span class="kw">let</span> l <span class="fu">=</span> <span class="kw">if</span> mlf <span class="fu">==</span> auto <span class="kw">then</span> zero <span class="kw">else</span> mlf
+                r <span class="fu">=</span> <span class="kw">if</span> mrt <span class="fu">==</span> auto <span class="kw">then</span> zero <span class="kw">else</span> mrt
+             <span class="kw">in</span> <span class="kw">if</span> uflow <span class="fu">&gt;=</span> <span class="dv">0</span>  
+                <span class="kw">then</span> (<span class="dt">Length</span> uflow <span class="dt">Px</span>,l,r)
+                <span class="kw">else</span> (zero,l,<span class="dt">Length</span> (toPx r <span class="fu">+</span> uflow) <span class="dt">Px</span>)
+
+
+<span class="co">-- I pulled out the lookup functions since they took up a lot of space,</span>
+<span class="co">-- and gave them nice descriptive names</span>
+
+<span class="ot">lookupSideVals ::</span> <span class="dt">LayoutBox</span> <span class="ot">-&gt;</span> <span class="dt">Either</span> <span class="dt">T.Text</span> [<span class="dt">Value</span>]
+lookupSideVals rt <span class="fu">=</span> <span class="kw">do</span>
+    style <span class="ot">&lt;-</span> getStyledElem rt
+    return <span class="fu">$</span> map (\a <span class="ot">-&gt;</span> lookup style a zero)
+        [ [<span class="st">&quot;margin-left&quot;</span>       , <span class="st">&quot;margin&quot;</span>]
+        , [<span class="st">&quot;margin-right&quot;</span>      , <span class="st">&quot;margin&quot;</span>]
+        , [<span class="st">&quot;border-left-width&quot;</span> , <span class="st">&quot;border-width&quot;</span>]
+        , [<span class="st">&quot;border-right-width&quot;</span>, <span class="st">&quot;border-width&quot;</span>]
+        , [<span class="st">&quot;padding-left&quot;</span>      , <span class="st">&quot;padding&quot;</span>]
+        , [<span class="st">&quot;padding-right&quot;</span>     , <span class="st">&quot;padding&quot;</span>] ]
+
+<span class="ot">lookupVertVals ::</span> <span class="dt">LayoutBox</span> <span class="ot">-&gt;</span> <span class="dt">Either</span> <span class="dt">T.Text</span> [<span class="dt">Float</span>]
+lookupVertVals rt <span class="fu">=</span> <span class="kw">do</span>
+    style <span class="ot">&lt;-</span> getStyledElem rt
+    return <span class="fu">$</span> map (toPx <span class="fu">.</span> (\a <span class="ot">-&gt;</span> lookup style a zero))
+        [ [<span class="st">&quot;margin-top&quot;</span>         , <span class="st">&quot;margin&quot;</span>]
+        , [<span class="st">&quot;margin-bottom&quot;</span>      , <span class="st">&quot;margin&quot;</span>]
+        , [<span class="st">&quot;border-top-width&quot;</span>   , <span class="st">&quot;border-width&quot;</span>]
+        , [<span class="st">&quot;border-bottom-width&quot;</span>, <span class="st">&quot;border-width&quot;</span>]
+        , [<span class="st">&quot;padding-top&quot;</span>        , <span class="st">&quot;padding&quot;</span>]
+        , [<span class="st">&quot;padding-bottom&quot;</span>     , <span class="st">&quot;padding&quot;</span>] ]
+
+
+<span class="ot">calcPosition ::</span> <span class="dt">Dimensions</span> <span class="ot">-&gt;</span> <span class="dt">LayoutBox</span> <span class="ot">-&gt;</span> <span class="dt">Either</span> <span class="dt">T.Text</span> <span class="dt">LayoutBox</span>
+calcPosition contBlock rt <span class="fu">=</span> <span class="kw">do</span>
+    [mt,mb,bt,bb,pt,pb] <span class="ot">&lt;-</span> lookupVertVals rt
+    <span class="kw">let</span> d <span class="fu">=</span> rt<span class="fu">^.</span>root<span class="fu">.</span>_1
+    return <span class="fu">$</span> rt <span class="fu">&amp;~</span> zoom (root <span class="fu">.</span> _1) (<span class="kw">do</span>
+        content<span class="fu">.</span>x<span class="fu">.=</span> contBlock<span class="fu">^.</span>content<span class="fu">.</span>x
+                  <span class="fu">+</span> d<span class="fu">^.</span>margin<span class="fu">.</span>left
+                  <span class="fu">+</span> d<span class="fu">^.</span>border<span class="fu">.</span>left
+                  <span class="fu">+</span> d<span class="fu">^.</span>padding<span class="fu">.</span>left
+        content<span class="fu">.</span>y<span class="fu">.=</span> contBlock<span class="fu">^.</span>content<span class="fu">.</span>y
+                  <span class="fu">+</span> contBlock<span class="fu">^.</span>content<span class="fu">.</span>height
+                  <span class="fu">+</span> pt <span class="fu">+</span> bt <span class="fu">+</span> mt
+        padding<span class="fu">.</span>top <span class="fu">.=</span> pt; padding<span class="fu">.</span>bottom <span class="fu">.=</span> pb
+        border<span class="fu">.</span>top  <span class="fu">.=</span> bt; border<span class="fu">.</span>bottom  <span class="fu">.=</span> bb
+        margin<span class="fu">.</span>top  <span class="fu">.=</span> mt; margin<span class="fu">.</span>bottom  <span class="fu">.=</span> mb)
+
+
+<span class="ot">layoutChildren ::</span> <span class="dt">LayoutBox</span> <span class="ot">-&gt;</span> <span class="dt">Either</span> <span class="dt">T.Text</span> <span class="dt">LayoutBox</span>
+layoutChildren rt <span class="fu">=</span> <span class="kw">do</span>
+    (dim,cs) <span class="ot">&lt;-</span> foldM foo (rt<span class="fu">^.</span>root<span class="fu">.</span>_1,[]) <span class="fu">$</span> rt<span class="fu">^.</span>children
+    return <span class="fu">$</span> rt <span class="fu">&amp;~</span> root<span class="fu">.</span>_1<span class="fu">.=</span> dim <span class="fu">&amp;~</span> children<span class="fu">.=</span> cs
+  <span class="kw">where</span>
+<span class="ot">    foo ::</span> (<span class="dt">Dimensions</span>,[<span class="dt">LayoutBox</span>]) <span class="ot">-&gt;</span> <span class="dt">LayoutBox</span> <span class="ot">-&gt;</span> <span class="dt">Either</span> <span class="dt">T.Text</span> (<span class="dt">Dimensions</span>,[<span class="dt">LayoutBox</span>])
+    foo (d,acc) c <span class="fu">=</span> <span class="kw">do</span>
+        c&#39; <span class="ot">&lt;-</span> layout c d
+        return (d <span class="fu">&amp;</span> content<span class="fu">.</span>height<span class="fu">+~</span> marginBoxHeight (c&#39;<span class="fu">^.</span>root<span class="fu">.</span>_1), acc <span class="fu">++</span> [c&#39;])
+
+<span class="ot">calcHeight ::</span> <span class="dt">LayoutBox</span> <span class="ot">-&gt;</span> <span class="dt">Either</span> <span class="dt">T.Text</span> <span class="dt">LayoutBox</span>
+calcHeight rt <span class="fu">=</span> <span class="kw">do</span>
+    s <span class="ot">&lt;-</span> getStyledElem rt
+    <span class="kw">case</span> value s <span class="st">&quot;height&quot;</span> <span class="kw">of</span>
+        <span class="dt">Just</span> (<span class="dt">Length</span> h <span class="dt">Px</span>)  <span class="ot">-&gt;</span> return <span class="fu">$</span> rt <span class="fu">&amp;</span> root<span class="fu">.</span>_1<span class="fu">.</span>content<span class="fu">.</span>height<span class="fu">.~</span> h
+        <span class="dt">Nothing</span>             <span class="ot">-&gt;</span> return rt
+
+
+<span class="ot">marginBoxHeight ::</span> <span class="dt">Dimensions</span> <span class="ot">-&gt;</span> <span class="dt">Float</span>
+marginBoxHeight dim <span class="fu">=</span> (marginBox dim)<span class="fu">^.</span>height
+
+<span class="ot">getStyledElem ::</span> <span class="dt">LayoutBox</span> <span class="ot">-&gt;</span> <span class="dt">Either</span> <span class="dt">T.Text</span> <span class="dt">StyledNode</span>
+getStyledElem rt <span class="fu">=</span> <span class="kw">case</span> rt<span class="fu">^.</span>root<span class="fu">.</span>_2 <span class="kw">of</span>
+    <span class="dt">BlockNode</span>  s   <span class="ot">-&gt;</span> <span class="dt">Right</span> <span class="fu">$</span> <span class="dt">NTree</span> s []
+    <span class="dt">InlineNode</span> s   <span class="ot">-&gt;</span> <span class="dt">Right</span> <span class="fu">$</span> <span class="dt">NTree</span> s []
+    <span class="dt">AnonymousBlock</span> <span class="ot">-&gt;</span> <span class="dt">Left</span> <span class="st">&quot;Error: attempted to access the nonexistant\</span>
+<span class="st">                           \ StyleNode of an AnonymousBlock&quot;</span>
+
+
+<span class="ot">expandedBy ::</span> <span class="dt">Rect</span> <span class="ot">-&gt;</span> <span class="dt">EdgeSize</span> <span class="ot">-&gt;</span> <span class="dt">Rect</span>
+expandedBy rec edge <span class="fu">=</span> rec <span class="fu">&amp;~</span> <span class="kw">do</span>
+                          x <span class="fu">-=</span> edge<span class="fu">^.</span>left
+                          y <span class="fu">-=</span> edge<span class="fu">^.</span>top
+                          width  <span class="fu">+=</span> (edge<span class="fu">^.</span>left <span class="fu">+</span> edge<span class="fu">^.</span>right)
+                          height <span class="fu">+=</span> (edge<span class="fu">^.</span>top <span class="fu">+</span> edge<span class="fu">^.</span>bottom)
+
+
+<span class="ot">paddingBox ::</span> <span class="dt">Dimensions</span> <span class="ot">-&gt;</span> <span class="dt">Rect</span>
+paddingBox d <span class="fu">=</span> (d<span class="fu">^.</span>content) <span class="ot">`expandedBy`</span> (d<span class="fu">^.</span>padding)
+
+<span class="ot">marginBox ::</span> <span class="dt">Dimensions</span> <span class="ot">-&gt;</span> <span class="dt">Rect</span>
+marginBox d <span class="fu">=</span> borderBox d <span class="ot">`expandedBy`</span> (d<span class="fu">^.</span>margin)
+
+<span class="ot">borderBox ::</span> <span class="dt">Dimensions</span> <span class="ot">-&gt;</span> <span class="dt">Rect</span>
+borderBox d <span class="fu">=</span> paddingBox d <span class="ot">`expandedBy`</span> (d<span class="fu">^.</span>margin)</code></pre>
+<p>Now that we’re using lenses throughout our layout tree, we’ll need to update <code>Painting.hs</code> and <code>tests.hs</code> as well.</p>
+<pre class="sourceCode haskell"><code class="sourceCode haskell"><span class="co">-- Painting.hs</span>
+
+<span class="kw">import </span><span class="dt">Control.Lens</span>
+
+<span class="ot">paint ::</span> <span class="dt">LayoutBox</span> <span class="ot">-&gt;</span> <span class="dt">Rect</span> <span class="ot">-&gt;</span> <span class="dt">Canvas</span>
+paint root bounds <span class="fu">=</span> <span class="kw">let</span> dlist  <span class="fu">=</span> buildDisplayList root
+                        canvas <span class="fu">=</span> newCanvas w h
+                        w <span class="fu">=</span> fromInteger <span class="fu">.</span> floor <span class="fu">$</span> bounds<span class="fu">^.</span>width
+                        h <span class="fu">=</span> fromInteger <span class="fu">.</span> floor <span class="fu">$</span> bounds<span class="fu">^.</span>height
+                    <span class="kw">in</span> F.foldl&#39; paintItem canvas dlist
+
+
+<span class="ot">buildDisplayList ::</span> <span class="dt">LayoutBox</span> <span class="ot">-&gt;</span> <span class="dt">DisplayList</span>
+buildDisplayList <span class="fu">=</span> F.foldMap renderLayoutBox
+
+
+<span class="ot">renderBorders ::</span> (<span class="dt">Dimensions</span>,<span class="dt">BoxType</span>) <span class="ot">-&gt;</span> <span class="dt">DisplayList</span>
+renderBorders (dim,ty) <span class="fu">=</span> maybe mempty renderBorders&#39; (getColor ty <span class="st">&quot;border-color&quot;</span>)
+  <span class="kw">where</span>
+    renderBorders&#39; color <span class="fu">=</span> V.fromList <span class="fu">$</span> map (<span class="dt">SolidColor</span> color) [l, r, t, b]
+    bbox <span class="fu">=</span> borderBox dim
+    bdr  <span class="fu">=</span> dim<span class="fu">^.</span>border
+    
+    l <span class="fu">=</span> bbox <span class="fu">&amp;</span> width<span class="fu">.~</span> bdr<span class="fu">^.</span>left
+    
+    r <span class="fu">=</span> bbox <span class="fu">&amp;</span> x<span class="fu">+~</span> bbox<span class="fu">^.</span>width <span class="fu">-</span> bdr<span class="fu">^.</span>right
+             <span class="fu">&amp;</span> width<span class="fu">.~</span> bdr<span class="fu">^.</span>right
+    
+    t <span class="fu">=</span> bbox <span class="fu">&amp;</span> height<span class="fu">.~</span> bdr<span class="fu">^.</span>top
+    
+    b <span class="fu">=</span> bbox <span class="fu">&amp;</span> y<span class="fu">+~</span> bbox<span class="fu">^.</span>height <span class="fu">-</span> bdr<span class="fu">^.</span>bottom
+             <span class="fu">&amp;</span> height<span class="fu">.~</span> bdr<span class="fu">^.</span>bottom
+
+
+<span class="ot">paintItem ::</span> <span class="dt">Canvas</span> <span class="ot">-&gt;</span> <span class="dt">DisplayCommand</span> <span class="ot">-&gt;</span> <span class="dt">Canvas</span>
+paintItem cs (<span class="dt">SolidColor</span> color rect) <span class="fu">=</span> updateChunk cs (x0,x1) (y0,y1) color
+  <span class="kw">where</span>
+    x0 <span class="fu">=</span> clampInt <span class="dv">0</span> (w<span class="fu">-</span><span class="dv">1</span>) (rect<span class="fu">^.</span>x)
+    y0 <span class="fu">=</span> clampInt <span class="dv">0</span> (h<span class="fu">-</span><span class="dv">1</span>) (rect<span class="fu">^.</span>y)
+    x1 <span class="fu">=</span> clampInt <span class="dv">0</span> (w<span class="fu">-</span><span class="dv">1</span>) (rect<span class="fu">^.</span>x <span class="fu">+</span> rect<span class="fu">^.</span>width <span class="fu">-</span> <span class="dv">1</span>)
+    y1 <span class="fu">=</span> clampInt <span class="dv">0</span> (h<span class="fu">-</span><span class="dv">1</span>) (rect<span class="fu">^.</span>y <span class="fu">+</span> rect<span class="fu">^.</span>height <span class="fu">-</span> <span class="dv">1</span>)
+    w <span class="fu">=</span> asFloat <span class="fu">$</span> wdth cs
+    h <span class="fu">=</span> asFloat <span class="fu">$</span> hght cs
+    asFloat <span class="fu">=</span> fromInteger <span class="fu">.</span> toInteger
+
+
+<span class="co">-- tests.hs</span>
+<span class="kw">import </span><span class="dt">Control.Lens</span>
+
+contBlock <span class="fu">=</span> defaultDim <span class="fu">&amp;</span> content<span class="fu">.</span>width<span class="fu">.~</span><span class="dv">800</span> <span class="fu">&amp;</span> content<span class="fu">.</span>height<span class="fu">.~</span><span class="dv">168</span>
+
+paintpng <span class="fu">=</span> paintpng&#39; s d
+  <span class="kw">where</span>
+    (<span class="dt">Right</span> d) <span class="fu">=</span> PS.parseHtml pnghtml
+    (<span class="dt">Right</span> s) <span class="fu">=</span> parseCSS pngcss
+    paintpng&#39; s d <span class="fu">=</span> <span class="kw">do</span>
+      <span class="kw">let</span> st <span class="fu">=</span> styleTree d s
+      lyt <span class="ot">&lt;-</span> layoutTree st contBlock
+      <span class="kw">let</span> vec <span class="fu">=</span> pixels <span class="fu">$</span> paint lyt (contBlock<span class="fu">^.</span>content)
+      return <span class="fu">$</span> generateImage (\x y<span class="ot">-&gt;</span> c2px <span class="fu">$</span> vec <span class="fu">V.!</span> (x <span class="fu">+</span> (y <span class="fu">*</span> <span class="dv">800</span>))) <span class="dv">800</span> <span class="dv">168</span>
+    c2px (<span class="dt">Color</span> r g b _) <span class="fu">=</span> <span class="dt">PixelRGB8</span> r g b</code></pre>
+<p>Finally, update <code>hubert.cabal</code> to add our lens dependency</p>
+<pre><code>executable hubert
+  main-is:             Main.hs
+  other-modules:       Dom,
+                       HTML.Parser,
+                       HTML.Parsec,
+                       CSS,
+                       Style,
+                       Layout
+
+  -- other-extensions:    
+  build-depends:       base &gt;=4.7 &amp;&amp; &lt;5,
+                       unordered-containers &gt;=0.2 &amp;&amp; &lt;0.3,
+                       mtl &gt;= 2.2.1,
+                       text &gt;= 1.1.0.0,
+                       parsec == 3.1.*,
+                       lens &gt;= 4.6
+
+
+Test-Suite hunit-tests
+  type:             exitcode-stdio-1.0
+  main-is:          tests.hs
+  other-modules:    Dom,
+                    HTML.Parser,
+                    HTML.Parsec,
+                    CSS,
+                    Style,
+                    Layout,
+                    Painting
+  build-depends:    base &gt;= 4.7 &amp;&amp; &lt; 5,
+                    unordered-containers &gt;=0.2 &amp;&amp; &lt;0.3,
+                    mtl &gt;= 2.2.1,
+                    text &gt;= 1.1.0.0,
+                    HUnit &gt;= 1.2.5.0,
+                    parsec == 3.1.*,
+                    vector &gt;= 0.10.9.1,
+                    JuicyPixels &gt;= 3.1.7.1,
+                    lens &gt;= 4.6
+  hs-source-dirs:   tests,
+                    src
+  default-language: Haskell2010</code></pre>
+<p>At this point, everything should compile and run correctly. We’ve used lenses to make the deeply nested updates in <code>Layout.hs</code> somewhat less awful to read, and we should be set until Robinson updates again.</p>
+<p>As usual, you can find the source for this post <a href="https://github.com/Hrothen/Hubert/tree/master/src">here</a> and the source for Robinson <a href="https://github.com/mbrubeck/robinson">here</a>.</p>
+    
+    <nav id="postNav">
+        
+        
+            <a href="/posts/lets-build-a-browser-engine-in-haskell-part-6.html" style="float:right; text-align: right;">Next post</a>
+        
+    </nav>
+</article>]]></summary>
+</entry>
+<entry>
+    <title>Let's Build a Browser Engine in Haskell: part 6</title>
+    <link href="http://hrothen.github.com/posts/lets-build-a-browser-engine-in-haskell-part-6.html" />
+    <id>http://hrothen.github.com/posts/lets-build-a-browser-engine-in-haskell-part-6.html</id>
+    <published>2014-11-19T00:00:00Z</published>
+    <updated>2014-11-19T00:00:00Z</updated>
+    <summary type="html"><![CDATA[<article>
+    <div class="info">
+        Posted on November 19, 2014
+        
+    </div>
+    
+    <p>Welcome back, today we’re going to implement painting of the layout tree to an image (but not to a real window, yet). The actual painting code is fairly simple, but before that we’re going to want to backtrack and modify some older code.</p>
+<p>First we’ll add a <code>Foldable</code> instance to our <code>NTree</code> in Dom.hs.</p>
+<pre class="sourceCode haskell"><code class="sourceCode haskell"><span class="kw">import </span><span class="dt">Data.Monoid</span> ((&lt;&gt;))   <span class="co">-- (&lt;&gt;) is an infix version of mappend</span>
+<span class="kw">import </span><span class="dt">Data.Foldable</span>
+
+<span class="kw">instance</span> <span class="dt">Foldable</span> <span class="dt">NTree</span> <span class="kw">where</span>
+    foldMap f (<span class="dt">NTree</span> n []) <span class="fu">=</span> f n
+    foldMap f (<span class="dt">NTree</span> n ns) <span class="fu">=</span> f n <span class="fu">&lt;&gt;</span> foldMap (foldMap f) ns</code></pre>
+<p>This will let us easily convert the layout tree into an intermediate representation.</p>
+<p>Next we’ll refactor a couple data structures to match how Robinson is laying things out. We’ll pull the first four fields of the <code>Dimensions</code> struct out into their own <code>Rect</code> struct and write a couple helpers for it. We’ll also pull the color data out of the <code>Value</code> type, so that later we can add other representations if we want to. (If this next bit seems hard to follow, the <a href="https://github.com/Hrothen/Hubert/commits/master">changelog</a> has a full diff)</p>
+<pre class="sourceCode haskell"><code class="sourceCode haskell">
+<span class="fu">----------------------</span> Layout.hs <span class="fu">--------------------</span>
+
+<span class="kw">data</span> <span class="dt">Rect</span> <span class="fu">=</span> <span class="dt">Rect</span> {<span class="ot"> x      ::</span> <span class="dt">Float</span>
+                 ,<span class="ot"> y      ::</span> <span class="dt">Float</span>
+                 ,<span class="ot"> width  ::</span> <span class="dt">Float</span>
+                 ,<span class="ot"> height ::</span> <span class="dt">Float</span> }
+
+<span class="kw">data</span> <span class="dt">Dimensions</span> <span class="fu">=</span> <span class="dt">Dimensions</span> {<span class="ot"> content ::</span> <span class="dt">Rect</span>
+                             ,<span class="ot"> padding ::</span> <span class="dt">EdgeSize</span>
+                             ,<span class="ot"> border  ::</span> <span class="dt">EdgeSize</span>
+                             ,<span class="ot"> margin  ::</span> <span class="dt">EdgeSize</span> }
+
+emptyRect <span class="fu">=</span> <span class="dt">Rect</span> <span class="dv">0</span> <span class="dv">0</span> <span class="dv">0</span> <span class="dv">0</span>
+
+defaultDim <span class="fu">=</span> <span class="dt">Dimensions</span> emptyRect emptyEdge emptyEdge emptyEdge
+
+<span class="co">-- Rect and Dimensions helpers</span>
+
+<span class="ot">expandedBy ::</span> <span class="dt">EdgeSize</span> <span class="ot">-&gt;</span> <span class="dt">Rect</span> <span class="ot">-&gt;</span> <span class="dt">Rect</span>
+expandedBy edge rec <span class="fu">=</span> <span class="dt">Rect</span>{ x      <span class="fu">=</span> x rec <span class="fu">-</span> left edge
+                          , y      <span class="fu">=</span> y rec <span class="fu">-</span> top edge
+                          , width  <span class="fu">=</span> width rec <span class="fu">+</span> left edge <span class="fu">+</span> right edge
+                          , height <span class="fu">=</span> height rec <span class="fu">+</span> top edge <span class="fu">+</span> bottom edge }
+
+
+<span class="ot">paddingBox ::</span> <span class="dt">Dimensions</span> <span class="ot">-&gt;</span> <span class="dt">Rect</span>
+paddingBox d <span class="fu">=</span> expandedBy (padding d) <span class="fu">$</span> content d
+
+<span class="ot">marginBox ::</span> <span class="dt">Dimensions</span> <span class="ot">-&gt;</span> <span class="dt">Rect</span>
+marginBox d <span class="fu">=</span> expandedBy (margin d) <span class="fu">$</span> borderBox d
+
+<span class="ot">borderBox ::</span> <span class="dt">Dimensions</span> <span class="ot">-&gt;</span> <span class="dt">Rect</span>
+borderBox d <span class="fu">=</span> expandedBy (border d) <span class="fu">$</span> paddingBox d
+
+
+<span class="ot">layoutTree ::</span> <span class="dt">StyledNode</span> <span class="ot">-&gt;</span> <span class="dt">Dimensions</span> <span class="ot">-&gt;</span><span class="dt">Either</span> <span class="dt">T.Text</span> <span class="dt">LayoutBox</span>
+layoutTree root contBlock <span class="fu">=</span> buildLayoutTree root <span class="fu">&gt;&gt;=</span>
+                            flip layout contBlock{content <span class="fu">=</span> (content contBlock){height<span class="fu">=</span><span class="dv">0</span>}}
+
+
+<span class="co">-- updateDim in calcWidth</span>
+updateDim d <span class="fu">=</span> <span class="kw">let</span> pad <span class="fu">=</span> padding d
+                        mar <span class="fu">=</span> margin d
+                        bor <span class="fu">=</span> border d
+                        rec <span class="fu">=</span> content d
+                     <span class="kw">in</span> d{ content <span class="fu">=</span> rec{ width <span class="fu">=</span> w&#39;&#39; }
+                         , padding <span class="fu">=</span> pad{ left  <span class="fu">=</span> plf, right <span class="fu">=</span> prt }
+                         , border  <span class="fu">=</span> bor{ left  <span class="fu">=</span> blw, right <span class="fu">=</span> brw }
+                         , margin  <span class="fu">=</span> mar{ left  <span class="fu">=</span> ml,  right <span class="fu">=</span> mr } }
+
+
+<span class="co">-- updateDim in calcPosition</span>
+updateDim d [mt,mb,bt,bb,pt,pb] <span class="fu">=</span>
+          <span class="kw">let</span> pad  <span class="fu">=</span> padding d
+              mar  <span class="fu">=</span> margin d
+              bor  <span class="fu">=</span> border d
+              brec <span class="fu">=</span> content contBlock
+              drec <span class="fu">=</span> content d
+              x&#39; <span class="fu">=</span> x brec
+                 <span class="fu">+</span> left (margin d)
+                 <span class="fu">+</span> left (border d)
+                 <span class="fu">+</span> left (padding d)
+              y&#39; <span class="fu">=</span> y brec <span class="fu">+</span> height brec <span class="fu">+</span> pt <span class="fu">+</span> bt <span class="fu">+</span> mt
+           <span class="kw">in</span> d{ content <span class="fu">=</span> drec{ x <span class="fu">=</span> x&#39;, y <span class="fu">=</span> y&#39; }
+               , padding <span class="fu">=</span> pad{ top <span class="fu">=</span> pt, bottom <span class="fu">=</span> pb }
+               , border  <span class="fu">=</span> bor{ top <span class="fu">=</span> bt, bottom <span class="fu">=</span> bb }
+               , margin  <span class="fu">=</span> mar{ top <span class="fu">=</span> mt, bottom <span class="fu">=</span> mb } }
+
+
+layoutChildren (<span class="dt">NTree</span> (dim,x) cs) <span class="fu">=</span> <span class="kw">do</span>
+    (dim&#39;,cs&#39;) <span class="ot">&lt;-</span> foldM foo (dim,[]) cs
+    return <span class="fu">$</span> <span class="dt">NTree</span> (dim&#39;,x) cs&#39;
+
+    <span class="kw">where</span>
+        foo (d,acc) c<span class="fu">@</span>(<span class="dt">NTree</span> (cdim,_) _) <span class="fu">=</span> <span class="kw">do</span>
+            c&#39;<span class="fu">@</span>(<span class="dt">NTree</span> (cdim&#39;,_)_) <span class="ot">&lt;-</span> layout c d
+            <span class="kw">let</span> rec <span class="fu">=</span> content d
+            return (d{ content <span class="fu">=</span>
+                rec{height <span class="fu">=</span> height rec <span class="fu">+</span> marginBoxHeight cdim&#39;}}, acc <span class="fu">++</span> [c&#39;])
+
+
+<span class="ot">calcHeight ::</span> <span class="dt">LayoutBox</span> <span class="ot">-&gt;</span> <span class="dt">Either</span> <span class="dt">T.Text</span> <span class="dt">LayoutBox</span>
+calcHeight root<span class="fu">@</span>(<span class="dt">NTree</span> (d,x)y) <span class="fu">=</span> <span class="kw">do</span>
+    s <span class="ot">&lt;-</span> getStyledElem root
+    <span class="kw">let</span> d&#39; <span class="fu">=</span> <span class="kw">case</span> value s <span class="st">&quot;height&quot;</span> <span class="kw">of</span>
+             <span class="dt">Just</span> (<span class="dt">Length</span> h <span class="dt">Px</span>)  <span class="ot">-&gt;</span> d{content <span class="fu">=</span> (content d){height<span class="fu">=</span>h}}
+             <span class="dt">Nothing</span>             <span class="ot">-&gt;</span> d
+    return <span class="fu">$</span> <span class="dt">NTree</span> (d&#39;,x) y
+
+<span class="fu">-----------------------------</span> Css.hs <span class="fu">------------------------------</span>
+
+<span class="kw">data</span> <span class="dt">Value</span> <span class="fu">=</span> <span class="dt">Keyword</span> <span class="dt">T.Text</span>
+           <span class="fu">|</span> <span class="dt">ColorValue</span> <span class="dt">Color</span>
+           <span class="fu">|</span> <span class="dt">Length</span> <span class="dt">Float</span> <span class="dt">Unit</span>
+  <span class="kw">deriving</span> (<span class="dt">Show</span>, <span class="dt">Eq</span>)
+
+<span class="kw">data</span> <span class="dt">Color</span> <span class="fu">=</span> <span class="dt">Color</span> <span class="dt">Word8</span> <span class="dt">Word8</span> <span class="dt">Word8</span> <span class="dt">Word8</span>
+  <span class="kw">deriving</span> (<span class="dt">Show</span>, <span class="dt">Eq</span>)
+
+color <span class="fu">=</span> <span class="kw">do</span>
+    char <span class="ch">&#39;#&#39;</span>
+    cs <span class="ot">&lt;-</span> count <span class="dv">3</span> (count <span class="dv">2</span> hexDigit)
+    <span class="kw">let</span> [r,g,b] <span class="fu">=</span> map (fst <span class="fu">.</span> head <span class="fu">.</span> readHex) cs
+    return <span class="fu">$</span> <span class="dt">ColorValue</span> (<span class="dt">Color</span> r g b <span class="dv">255</span>)               </code></pre>
+<p>There are a couple other places where you’ll need to replace <code>foo rect</code> with <code>foo (content rect)</code> but the compiler will point them out.</p>
+<p>Now we’re ready to implement painting.</p>
+<p>Painting will be a two-phase process: first we construct a <code>DisplayList</code> from our layout tree, and then we write all the entries in the <code>DisplayList</code> to a canvas.</p>
+<pre class="sourceCode haskell"><code class="sourceCode haskell"><span class="ot">{-# LANGUAGE OverloadedStrings #-}</span>
+<span class="kw">module</span> <span class="dt">Painting</span>
+    ( <span class="dt">Canvas</span> (<span class="fu">..</span>)
+    , newCanvas
+    , paint
+    ) <span class="kw">where</span>
+
+<span class="kw">import </span><span class="dt">Data.Monoid</span> ((&lt;&gt;),mempty)
+<span class="kw">import </span><span class="dt">Data.Word</span>
+
+<span class="kw">import qualified</span> <span class="dt">Data.Foldable</span> <span class="kw">as</span> <span class="dt">F</span>
+<span class="kw">import qualified</span> <span class="dt">Data.Vector</span> <span class="kw">as</span> <span class="dt">V</span>
+<span class="kw">import qualified</span> <span class="dt">Data.Text</span> <span class="kw">as</span> <span class="dt">T</span>
+
+<span class="kw">import </span><span class="dt">Dom</span>
+<span class="kw">import </span><span class="dt">Layout</span>
+<span class="kw">import </span><span class="dt">Style</span>
+<span class="kw">import </span><span class="dt">CSS</span> (<span class="dt">Value</span>(<span class="dt">ColorValue</span>), <span class="dt">Color</span>(..))
+
+<span class="kw">type</span> <span class="dt">DisplayList</span> <span class="fu">=</span> <span class="dt">V.Vector</span> <span class="dt">DisplayCommand</span>
+
+<span class="kw">data</span> <span class="dt">DisplayCommand</span> <span class="fu">=</span> <span class="dt">SolidColor</span> <span class="dt">Color</span> <span class="dt">Rect</span>
+
+<span class="kw">data</span> <span class="dt">Canvas</span> <span class="fu">=</span> <span class="dt">Canvas</span> {<span class="ot"> pixels ::</span> <span class="dt">V.Vector</span> <span class="dt">Color</span>
+                     ,<span class="ot"> wdth   ::</span> <span class="dt">Word</span>   <span class="co">-- we need to abbreviate these because they conflict</span>
+                     ,<span class="ot"> hght   ::</span> <span class="dt">Word</span> } <span class="co">-- with Rect.width and Rect.height, GHC 7.10 fixes this</span>
+
+<span class="ot">newCanvas ::</span> <span class="dt">Word</span> <span class="ot">-&gt;</span> <span class="dt">Word</span> <span class="ot">-&gt;</span> <span class="dt">Canvas</span>
+newCanvas w h <span class="fu">=</span> <span class="kw">let</span> white <span class="fu">=</span> <span class="dt">Color</span> <span class="dv">255</span> <span class="dv">255</span> <span class="dv">255</span> <span class="dv">255</span> <span class="kw">in</span>
+                <span class="dt">Canvas</span> (V.replicate (fromIntegral(w <span class="fu">*</span> h)) white) w h</code></pre>
+<p>The <code>DisplayList</code> is an intermediate representation we can use to modify the data we draw, for instance by culling boxes that are entirely outside the screen. I suspect that a <code>Data.Vector</code> will be a good choice for this structure, but I’d like to minimize the amount of code we need to change if we later want to use something like <code>Data.Sequence</code> instead, so we’ll try to use functions from <code>Data.Foldable</code> where possible. Right now we’re only drawing boxes, so our <code>DisplayCommand</code> is just a solid color and a rectangle.</p>
+<p>Building a <code>DisplayList</code> is a simple fold:</p>
+<pre class="sourceCode haskell"><code class="sourceCode haskell"><span class="ot">buildDisplayList ::</span> <span class="dt">LayoutBox</span> <span class="ot">-&gt;</span> <span class="dt">DisplayList</span>
+buildDisplayList lbox <span class="fu">=</span> F.foldMap renderLayoutBox lbox</code></pre>
+<p>Rendering a layout box consists of drawing the background rectangle, and then a rect for each border. If a color isn’t specified for the background or borders, we don’t add a <code>DisplayCommand</code> for that part.</p>
+<pre class="sourceCode haskell"><code class="sourceCode haskell"><span class="ot">renderLayoutBox ::</span> (<span class="dt">Dimensions</span>,<span class="dt">BoxType</span>) <span class="ot">-&gt;</span> <span class="dt">DisplayList</span>
+renderLayoutBox box <span class="fu">=</span> renderBackgroud box <span class="fu">&lt;&gt;</span> renderBorders box
+
+
+<span class="ot">renderBackgroud ::</span> (<span class="dt">Dimensions</span>,<span class="dt">BoxType</span>) <span class="ot">-&gt;</span> <span class="dt">DisplayList</span>
+renderBackgroud (dim,ty) <span class="fu">=</span> maybe mempty
+    (return <span class="fu">.</span> flip <span class="dt">SolidColor</span> (borderBox dim)) (getColor ty <span class="st">&quot;background&quot;</span>)
+
+
+<span class="ot">renderBorders ::</span> (<span class="dt">Dimensions</span>,<span class="dt">BoxType</span>) <span class="ot">-&gt;</span> <span class="dt">DisplayList</span>
+renderBorders (dim,ty) <span class="fu">=</span> maybe mempty renderBorders&#39; (getColor ty <span class="st">&quot;border-color&quot;</span>)
+  <span class="kw">where</span>
+    renderBorders&#39; color <span class="fu">=</span> V.fromList <span class="fu">$</span> map (<span class="dt">SolidColor</span> color) [l, r, t, b]
+    bbox <span class="fu">=</span> borderBox dim
+    bdr  <span class="fu">=</span> border dim
+    
+    l <span class="fu">=</span> bbox{ width <span class="fu">=</span> left bdr }
+    
+    r <span class="fu">=</span> bbox{ x     <span class="fu">=</span> x bbox <span class="fu">+</span> width bbox <span class="fu">-</span> right bdr
+            , width <span class="fu">=</span> right bdr }
+    
+    t <span class="fu">=</span> bbox{ height <span class="fu">=</span> top bdr }
+    
+    b <span class="fu">=</span> bbox{ y      <span class="fu">=</span> y bbox <span class="fu">+</span> height bbox <span class="fu">-</span> bottom bdr
+            , height <span class="fu">=</span> bottom bdr }
+
+
+<span class="ot">getColor ::</span> <span class="dt">BoxType</span> <span class="ot">-&gt;</span> <span class="dt">T.Text</span> <span class="ot">-&gt;</span> <span class="dt">Maybe</span> <span class="dt">Color</span>
+getColor (<span class="dt">BlockNode</span> style) name  <span class="fu">=</span> getColor&#39; style name
+getColor (<span class="dt">InlineNode</span> style) name <span class="fu">=</span> getColor&#39; style name
+getColor <span class="dt">AnonymousBlock</span> _        <span class="fu">=</span> <span class="dt">Nothing</span>
+
+getColor&#39; style name <span class="fu">=</span> <span class="kw">case</span> value (<span class="dt">NTree</span> style []) name <span class="kw">of</span>
+                         <span class="dt">Just</span> (<span class="dt">ColorValue</span> (<span class="dt">Color</span> r g b a)) <span class="ot">-&gt;</span> <span class="dt">Just</span> (<span class="dt">Color</span> r g b a)
+                         _                    <span class="ot">-&gt;</span> <span class="dt">Nothing</span></code></pre>
+<p>We’re not actually implementing any functions to modify the <code>DisplayList</code> right now, so all that’s left is painting. We draw each command on top of the previous one.</p>
+<pre class="sourceCode haskell"><code class="sourceCode haskell"><span class="ot">paint ::</span> <span class="dt">LayoutBox</span> <span class="ot">-&gt;</span> <span class="dt">Rect</span> <span class="ot">-&gt;</span> <span class="dt">Canvas</span>
+paint root bounds <span class="fu">=</span> <span class="kw">let</span> dlist  <span class="fu">=</span> buildDisplayList root
+                        canvas <span class="fu">=</span> newCanvas w h
+                        w <span class="fu">=</span> fromInteger <span class="fu">.</span> floor <span class="fu">$</span> width  bounds
+                        h <span class="fu">=</span> fromInteger <span class="fu">.</span> floor <span class="fu">$</span> height bounds
+                    <span class="kw">in</span> F.foldl&#39; paintItem canvas dlist
+
+
+<span class="ot">paintItem ::</span> <span class="dt">Canvas</span> <span class="ot">-&gt;</span> <span class="dt">DisplayCommand</span> <span class="ot">-&gt;</span> <span class="dt">Canvas</span>
+paintItem cs (<span class="dt">SolidColor</span> color rect) <span class="fu">=</span> updateChunk cs (x0,x1) (y0,y1) color
+  <span class="kw">where</span>
+    x0 <span class="fu">=</span> clampInt <span class="dv">0</span> (w<span class="fu">-</span><span class="dv">1</span>) (x rect)
+    y0 <span class="fu">=</span> clampInt <span class="dv">0</span> (h<span class="fu">-</span><span class="dv">1</span>) (y rect)
+    x1 <span class="fu">=</span> clampInt <span class="dv">0</span> (w<span class="fu">-</span><span class="dv">1</span>) (x rect <span class="fu">+</span> width rect <span class="fu">-</span> <span class="dv">1</span>)
+    y1 <span class="fu">=</span> clampInt <span class="dv">0</span> (h<span class="fu">-</span><span class="dv">1</span>) (y rect <span class="fu">+</span> height rect <span class="fu">-</span> <span class="dv">1</span>)
+    w <span class="fu">=</span> asFloat <span class="fu">$</span> wdth cs
+    h <span class="fu">=</span> asFloat <span class="fu">$</span> hght cs
+    asFloat <span class="fu">=</span> fromInteger <span class="fu">.</span> toInteger
+
+
+
+<span class="co">-- this probably modifies the pixel vector in-place, if I&#39;m reading the</span>
+<span class="co">-- Data.Vector source correctly</span>
+<span class="ot">updateChunk ::</span> <span class="dt">Canvas</span> <span class="ot">-&gt;</span> (<span class="dt">Integer</span>,<span class="dt">Integer</span>) <span class="ot">-&gt;</span> (<span class="dt">Integer</span>,<span class="dt">Integer</span>) <span class="ot">-&gt;</span> <span class="dt">Color</span> <span class="ot">-&gt;</span> <span class="dt">Canvas</span>
+updateChunk cs (x0,x1) (y0,y1) c <span class="fu">=</span> <span class="kw">let</span> pxs <span class="fu">=</span> V.update (pixels cs) chunk <span class="kw">in</span>
+                                   cs{ pixels <span class="fu">=</span> pxs}
+  <span class="kw">where</span>
+    chunk <span class="fu">=</span> V.map (\a<span class="ot">-&gt;</span>(fromIntegral a,c)) indicies
+    indicies <span class="fu">=</span> V.fromList [ y <span class="fu">*</span> (toInteger <span class="fu">$</span> wdth cs) <span class="fu">+</span> x <span class="fu">|</span> x <span class="ot">&lt;-</span> [x0<span class="fu">..</span>x1], y <span class="ot">&lt;-</span> [y0<span class="fu">..</span>y1] ]
+
+
+<span class="ot">clampInt ::</span> <span class="dt">Float</span> <span class="ot">-&gt;</span> <span class="dt">Float</span> <span class="ot">-&gt;</span> <span class="dt">Float</span> <span class="ot">-&gt;</span> <span class="dt">Integer</span>
+clampInt f c <span class="fu">=</span> floor <span class="fu">.</span> min c <span class="fu">.</span> max f</code></pre>
+<p>Note that this code differs slightly from the equivalent Rust code in Robinson: clamping to [0,height] and [0,width] is a runtime error (you’ll try to write one row/column of pixels too far, I’m not sure why Rust allows it), and straight up adding the dimensions to the coordinates will also result in boxes that are 1 pixel too large in both dimensions.</p>
+<p>That’s all our painting code, we just need to add a quick test to make sure it works. We’ll need a library to load images for this, and sadly there isn’t one included in the Haskell Platform, so we’ll need to install it. Add the following lines to build-depends in your .cabal file:</p>
+<pre><code>vector &gt;= 0.10.9.1,
+JuicyPixels &gt;= 3.1.7.1</code></pre>
+<p>And then in a command prompt run:</p>
+<pre class="sourceCode bash"><code class="sourceCode bash"><span class="kw">cabal</span> update
+<span class="kw">cabal</span> install --enable-tests --only-dependencies</code></pre>
+<p>This will install the JuicyPixels library, which has good support for dealing with images in the most common formats.</p>
+<p>We’ll add one test (you’ll need to grab rainbow.png from the github repo)</p>
+<pre class="sourceCode haskell"><code class="sourceCode haskell"><span class="co">-- add these at the top of tests.hs</span>
+<span class="kw">import </span><span class="dt">Data.Maybe</span>
+
+<span class="kw">import qualified</span> <span class="dt">Data.Vector</span> <span class="kw">as</span> <span class="dt">V</span>
+
+<span class="kw">import </span><span class="dt">Codec.Picture</span>
+<span class="kw">import </span><span class="dt">Codec.Picture.Types</span>
+
+<span class="kw">import </span><span class="dt">Painting</span>
+
+<span class="fu">-----------------------------</span> <span class="dt">PAINT</span> <span class="dt">TESTS</span> <span class="fu">---------------------------</span>
+
+testPaint <span class="fu">=</span> <span class="dt">TestCase</span> <span class="fu">$</span> <span class="kw">do</span> 
+    testpng <span class="ot">&lt;-</span> readPng <span class="st">&quot;tests/rainbow.png&quot;</span>
+    either (\_<span class="ot">-&gt;</span>assertFailure <span class="st">&quot;missing png image&quot;</span>)
+           (compareImage paintpng)
+           testpng
+
+compareImage (<span class="dt">Left</span> e) _ <span class="fu">=</span> assertFailure <span class="fu">$</span> T.unpack e
+compareImage (<span class="dt">Right</span> i1) (<span class="dt">ImageRGB8</span> i2) <span class="fu">=</span> <span class="kw">do</span>
+  assertEqual <span class="st">&quot;height&quot;</span> (imageHeight i1) (imageHeight i2)
+  assertEqual <span class="st">&quot;width&quot;</span>  (imageWidth i1)  (imageWidth i2)
+  assertEqual <span class="st">&quot;pixels&quot;</span> (imageData i1)   (imageData i2)
+
+
+contBlock <span class="fu">=</span> defaultDim{content <span class="fu">=</span> (content defaultDim){ width<span class="fu">=</span><span class="dv">800</span>, height<span class="fu">=</span><span class="dv">168</span> } }
+
+paintpng <span class="fu">=</span> paintpng&#39; s d
+  <span class="kw">where</span>
+    (<span class="dt">Right</span> d) <span class="fu">=</span> PS.parseHtml pnghtml
+    (<span class="dt">Right</span> s) <span class="fu">=</span> parseCSS pngcss
+    paintpng&#39; s d <span class="fu">=</span> <span class="kw">do</span>
+      <span class="kw">let</span> st <span class="fu">=</span> styleTree d s
+      lyt <span class="ot">&lt;-</span> layoutTree st contBlock
+      <span class="kw">let</span> vec <span class="fu">=</span> pixels <span class="fu">$</span> paint lyt (content contBlock)
+      return <span class="fu">$</span> generateImage (\x y<span class="ot">-&gt;</span> c2px <span class="fu">$</span> vec <span class="fu">V.!</span> (x <span class="fu">+</span> (y <span class="fu">*</span> <span class="dv">800</span>))) <span class="dv">800</span> <span class="dv">168</span>
+    c2px (<span class="dt">Color</span> r g b _) <span class="fu">=</span> <span class="dt">PixelRGB8</span> r g b
+
+pnghtml <span class="fu">=</span> <span class="st">&quot;&lt;div class=\&quot;a\&quot;&gt;\</span>
+<span class="st">\  &lt;div class=\&quot;b\&quot;&gt;\</span>
+<span class="st">\    &lt;div class=\&quot;c\&quot;&gt;\</span>
+<span class="st">\      &lt;div class=\&quot;d\&quot;&gt;\</span>
+<span class="st">\        &lt;div class=\&quot;e\&quot;&gt;\</span>
+<span class="st">\          &lt;div class=\&quot;f\&quot;&gt;\</span>
+<span class="st">\            &lt;div class=\&quot;g\&quot;&gt;\</span>
+<span class="st">\            &lt;/div&gt;\</span>
+<span class="st">\          &lt;/div&gt;\</span>
+<span class="st">\        &lt;/div&gt;\</span>
+<span class="st">\      &lt;/div&gt;\</span>
+<span class="st">\    &lt;/div&gt;\</span>
+<span class="st">\  &lt;/div&gt;\</span>
+<span class="st">\&lt;/div&gt;&quot;</span>
+
+pngcss <span class="fu">=</span> <span class="st">&quot;* { display: block; padding: 12px; }\</span>
+<span class="st">\.a { background: #ff0000; }\</span>
+<span class="st">\.b { background: #ffa500; }\</span>
+<span class="st">\.c { background: #ffff00; }\</span>
+<span class="st">\.d { background: #008000; }\</span>
+<span class="st">\.e { background: #0000ff; }\</span>
+<span class="st">\.f { background: #4b0082; }\</span>
+<span class="st">\.g { background: #800080; }&quot;</span></code></pre>
+<p>Don’t forget to add <code>testPaint</code> to the test list.</p>
+<p>That’s everything for painting. I might put up another post covering some refactorings and additions to the current code before the next Robinson update comes out, or I might work on something completely different for a bit. We’ll see.</p>
+<p>As usual, you can find the source for this post <a href="https://github.com/Hrothen/Hubert/blob/master/src/Painting.hs">here</a> and the source for Robinson <a href="https://github.com/mbrubeck/robinson">here</a>.</p>
+    
+    <nav id="postNav">
+        
+            <a href="/posts/lets-write-a-browser-engine-in-haskell-a-lens-interlude.html" style="float:left;">Previous post</a>
+        
+        
+            <a href="/posts/lets-build-a-browser-engine-in-haskell-part-5.html" style="float:right; text-align: right;">Next post</a>
+        
+    </nav>
+</article>]]></summary>
+</entry>
+<entry>
+    <title>Let's Build a Browser Engine in Haskell: part 5</title>
+    <link href="http://hrothen.github.com/posts/lets-build-a-browser-engine-in-haskell-part-5.html" />
+    <id>http://hrothen.github.com/posts/lets-build-a-browser-engine-in-haskell-part-5.html</id>
+    <published>2014-10-01T00:00:00Z</published>
+    <updated>2014-10-01T00:00:00Z</updated>
+    <summary type="html"><![CDATA[<article>
+    <div class="info">
+        Posted on October  1, 2014
+        
+    </div>
+    
+    <p>Welcome back, today we’re going to implement Boxes and also the Block Layout, because Matt’s post on Boxes was mostly talking about how they’re set up and I don’t have to do that since he already has. To start with we’re going to want to set up our imports and define some new types.</p>
+<pre class="sourceCode haskell"><code class="sourceCode haskell"><span class="ot">{-#LANGUAGE BangPatterns, OverloadedStrings#-}</span>
+<span class="kw">module</span> <span class="dt">Layout</span> <span class="kw">where</span>
+
+<span class="kw">import </span><span class="dt">Prelude</span> <span class="kw">hiding</span> (lookup)
+<span class="kw">import </span><span class="dt">Control.Applicative</span> ((&lt;$&gt;))
+<span class="kw">import </span><span class="dt">Control.Monad</span> (foldM)
+<span class="kw">import </span><span class="dt">Data.List</span> (foldl&#39;, groupBy)
+<span class="kw">import </span><span class="dt">Data.Maybe</span> (fromMaybe)
+
+<span class="kw">import qualified</span> <span class="dt">Data.Text</span> <span class="kw">as</span> <span class="dt">T</span>
+
+<span class="kw">import </span><span class="dt">Dom</span>
+<span class="kw">import </span><span class="dt">CSS</span>
+<span class="kw">import </span><span class="dt">Style</span>
+
+<span class="kw">data</span> <span class="dt">Dimensions</span> <span class="fu">=</span> <span class="dt">Dimensions</span> {<span class="ot"> x       ::</span> <span class="dt">Float</span>
+                             ,<span class="ot"> y       ::</span> <span class="dt">Float</span>
+                             ,<span class="ot"> width   ::</span> <span class="dt">Float</span>
+                             ,<span class="ot"> height  ::</span> <span class="dt">Float</span>
+                             ,<span class="ot"> padding ::</span> <span class="dt">EdgeSize</span>
+                             ,<span class="ot"> border  ::</span> <span class="dt">EdgeSize</span>
+                             ,<span class="ot"> margin  ::</span> <span class="dt">EdgeSize</span> }
+
+<span class="kw">data</span> <span class="dt">EdgeSize</span> <span class="fu">=</span> <span class="dt">EdgeSize</span> {<span class="ot"> left   ::</span> <span class="dt">Float</span>
+                         ,<span class="ot"> right  ::</span> <span class="dt">Float</span>
+                         ,<span class="ot"> top    ::</span> <span class="dt">Float</span>
+                         ,<span class="ot"> bottom ::</span> <span class="dt">Float</span> }
+
+<span class="kw">type</span> <span class="dt">LayoutBox</span> <span class="fu">=</span> <span class="dt">NTree</span> (<span class="dt">Dimensions</span>,<span class="dt">BoxType</span>)
+
+<span class="kw">type</span> <span class="dt">StyledElement</span> <span class="fu">=</span> (<span class="dt">NodeType</span>,<span class="dt">PropertyMap</span>)
+
+<span class="kw">data</span> <span class="dt">BoxType</span> <span class="fu">=</span> <span class="dt">BlockNode</span> <span class="dt">StyledElement</span> <span class="fu">|</span> <span class="dt">InlineNode</span> <span class="dt">StyledElement</span> <span class="fu">|</span> <span class="dt">AnonymousBlock</span>
+
+emptyEdge <span class="fu">=</span> <span class="dt">EdgeSize</span> <span class="dv">0</span> <span class="dv">0</span> <span class="dv">0</span> <span class="dv">0</span>
+
+defaultDim <span class="fu">=</span> <span class="dt">Dimensions</span> <span class="dv">0</span> <span class="dv">0</span> <span class="dv">0</span> <span class="dv">0</span> emptyEdge emptyEdge emptyEdge</code></pre>
+<p>We’ll also want to add some code to the style module:</p>
+<pre class="sourceCode haskell"><code class="sourceCode haskell"><span class="kw">data</span> <span class="dt">Display</span> <span class="fu">=</span> <span class="dt">Inline</span> <span class="fu">|</span> <span class="dt">Block</span> <span class="fu">|</span> <span class="dt">DisplayNone</span>
+  <span class="kw">deriving</span> (<span class="dt">Eq</span>)
+
+<span class="co">-- if name exists, return its specified value</span>
+<span class="ot">value ::</span> <span class="dt">StyledNode</span> <span class="ot">-&gt;</span> <span class="dt">T.Text</span> <span class="ot">-&gt;</span> <span class="dt">Maybe</span> <span class="dt">Value</span>
+value (<span class="dt">NTree</span> node _) name <span class="fu">=</span> HM.lookup name (snd node)
+
+<span class="co">-- look up the display value of a node</span>
+<span class="ot">display ::</span> <span class="dt">StyledNode</span> <span class="ot">-&gt;</span> <span class="dt">Display</span>
+display n <span class="fu">=</span> <span class="kw">case</span> value n <span class="st">&quot;display&quot;</span> <span class="kw">of</span>
+    <span class="dt">Just</span> (<span class="dt">Keyword</span> <span class="st">&quot;block&quot;</span>) <span class="ot">-&gt;</span> <span class="dt">Block</span>
+    <span class="dt">Just</span> (<span class="dt">Keyword</span> <span class="st">&quot;none&quot;</span>)  <span class="ot">-&gt;</span> <span class="dt">DisplayNone</span>
+    _ <span class="ot">-&gt;</span> <span class="dt">Inline</span>
+
+<span class="co">-- this lookup is different than the robinson one, it supports</span>
+<span class="co">-- an arbitrary number of possible keywords</span>
+
+<span class="co">-- return the specified value of the first property in ks to exist</span>
+<span class="co">-- or def if no properties match</span>
+lookup<span class="ot"> ::</span> <span class="dt">StyledNode</span> <span class="ot">-&gt;</span> [<span class="dt">T.Text</span>] <span class="ot">-&gt;</span> <span class="dt">Value</span> <span class="ot">-&gt;</span> <span class="dt">Value</span>
+lookup s ks def <span class="fu">=</span> maybe def (fromJust <span class="fu">.</span> value s) (find (isJust <span class="fu">.</span> value s) ks)</code></pre>
+<p>And a single helper function to CSS</p>
+<pre class="sourceCode haskell"><code class="sourceCode haskell"><span class="ot">toPx ::</span> <span class="dt">Value</span> <span class="ot">-&gt;</span> <span class="dt">Float</span>
+toPx (<span class="dt">Length</span> len <span class="dt">Px</span>) <span class="fu">=</span> len
+toPx _               <span class="fu">=</span> <span class="dv">0</span></code></pre>
+<p>Now we can start to work on the layout tree. Our first function traverses the style tree and builds a box for each node. Nodes with <code>display=&quot;none&quot;</code> (and their children) are filtered from the tree, and adjacent Inline boxes that are children of a Block node are grouped together beneath Anonymous boxes. We also give every node a default initial set of dimensions.</p>
+<pre class="sourceCode haskell"><code class="sourceCode haskell"><span class="ot">buildLayoutTree ::</span> <span class="dt">StyledNode</span> <span class="ot">-&gt;</span> <span class="dt">Either</span> <span class="dt">T.Text</span> <span class="dt">LayoutBox</span>
+buildLayoutTree root <span class="fu">=</span> <span class="kw">case</span> display root <span class="kw">of</span>
+    <span class="dt">Block</span>       <span class="ot">-&gt;</span> <span class="dt">Right</span> <span class="fu">$</span> addDim <span class="fu">&lt;$&gt;</span> blt root
+    <span class="dt">Inline</span>      <span class="ot">-&gt;</span> <span class="dt">Right</span> <span class="fu">$</span> addDim <span class="fu">&lt;$&gt;</span> blt root
+    <span class="dt">DisplayNone</span> <span class="ot">-&gt;</span> <span class="dt">Left</span> <span class="st">&quot;error: root node has display:none&quot;</span>
+  <span class="kw">where</span>
+    addDim x <span class="fu">=</span> (defaultDim,x)
+
+    blt rt<span class="fu">@</span>(<span class="dt">NTree</span> nd cs) <span class="fu">=</span> <span class="dt">NTree</span> n ns
+      <span class="kw">where</span> 
+        (<span class="fu">!</span>n, <span class="fu">!</span>ns) <span class="fu">=</span> <span class="kw">case</span> display rt <span class="kw">of</span>
+            <span class="dt">Block</span>  <span class="ot">-&gt;</span> (<span class="dt">BlockNode</span>  nd, anonify ns&#39;)
+            <span class="dt">Inline</span> <span class="ot">-&gt;</span> (<span class="dt">InlineNode</span> nd, ns&#39;)
+            <span class="co">-- won&#39;t ever hit DisplayNone, it&#39;s filtered out</span>
+        
+        anonify <span class="fu">=</span> concatMap mergeInlines <span class="fu">.</span> groupBy (\x y <span class="ot">-&gt;</span> isInline x <span class="fu">&amp;&amp;</span> isInline y)
+        
+        mergeInlines x <span class="fu">=</span> <span class="kw">if</span> isInline <span class="fu">$</span> head x <span class="kw">then</span> [<span class="dt">NTree</span> <span class="dt">AnonymousBlock</span> x] <span class="kw">else</span> x
+
+        isInline (<span class="dt">NTree</span> <span class="dt">InlineNode</span>{} _) <span class="fu">=</span> <span class="dt">True</span>
+        isInline _                      <span class="fu">=</span> <span class="dt">False</span>
+        
+        ns&#39; <span class="fu">=</span> map blt <span class="fu">$</span> filter ((<span class="fu">/=</span><span class="dt">DisplayNone</span>) <span class="fu">.</span> display) cs</code></pre>
+<p>I’m a little worried about the space performance of this function, for now I’ve used the <code>BangPatterns</code> pragma which allows me to mark <code>n</code> and <code>ns</code> as “strict” (really just evaluated to <a href="http://www.haskell.org/haskellwiki/Weak_head_normal_form">weak head normal form</a>) by prefixing them with an exclamation point. This should hopefully prevent the program from building up a huge set of thunks while traversing the tree (reasoning about strictness/laziness and space usage are areas I need to improve on).</p>
+<p>We now add some code to set the dimensions on the layout tree, at the moment we’ll only support Block nodes, so anything without <code>display=&quot;block&quot;</code> set will give us an error (I won’t be adding a test for this part yet).</p>
+<pre class="sourceCode haskell"><code class="sourceCode haskell"><span class="co">-- walk a layout tree, setting the dimensions of each node</span>
+<span class="ot">layout ::</span> <span class="dt">LayoutBox</span> <span class="ot">-&gt;</span> <span class="dt">Dimensions</span> <span class="ot">-&gt;</span> <span class="dt">Either</span> <span class="dt">T.Text</span> <span class="dt">LayoutBox</span>
+layout l<span class="fu">@</span>(<span class="dt">NTree</span> (_,box)_) contBlock <span class="fu">=</span> <span class="kw">case</span> box <span class="kw">of</span>
+    <span class="dt">BlockNode</span>  _   <span class="ot">-&gt;</span> layoutBlock contBlock l
+    <span class="dt">InlineNode</span> _   <span class="ot">-&gt;</span> undefined
+    <span class="dt">AnonymousBlock</span> <span class="ot">-&gt;</span> undefined
+
+
+layoutBlock dim root <span class="fu">=</span> calcWidth dim root <span class="fu">&gt;&gt;=</span>
+                       calcPosition dim   <span class="fu">&gt;&gt;=</span>
+                       layoutChildren     <span class="fu">&gt;&gt;=</span> <span class="co">-- you know what? this might leak</span>
+                       calcHeight </code></pre>
+<p><code>layoutBlock</code> starts at the root, computes the width and position of the node, then does the same for all its children. Once the whole tree has been set out, we walk back up it from the leaves calculating the height of each node. It’s possible that recursing in the middle of the function could cause problems for large pages, although that is also how the Rust implementation is written. This will probably get refactored later.</p>
+<p>Calculating the width is fairly ugly, nothing is complicated, but there are a bunch of boundary checks to make.</p>
+<pre class="sourceCode haskell"><code class="sourceCode haskell"><span class="ot">calcWidth ::</span> <span class="dt">Dimensions</span> <span class="ot">-&gt;</span> <span class="dt">LayoutBox</span> <span class="ot">-&gt;</span> <span class="dt">Either</span> <span class="dt">T.Text</span> <span class="dt">LayoutBox</span>
+calcWidth contBlock root<span class="fu">@</span>(<span class="dt">NTree</span> (dim,x) y) <span class="fu">=</span> <span class="kw">do</span>
+    style <span class="ot">&lt;-</span> getStyledElem root
+    <span class="kw">let</span>
+      auto <span class="fu">=</span> <span class="dt">Keyword</span> <span class="st">&quot;auto&quot;</span>
+      zero <span class="fu">=</span> <span class="dt">Length</span> <span class="dv">0</span> <span class="dt">Px</span>
+      w <span class="fu">=</span> fromMaybe auto <span class="fu">$</span> value style <span class="st">&quot;width&quot;</span>
+      vals <span class="fu">=</span> map (\a <span class="ot">-&gt;</span> lookup style a zero) [
+                    [<span class="st">&quot;margin-left&quot;</span>       , <span class="st">&quot;margin&quot;</span>]
+                  , [<span class="st">&quot;margin-right&quot;</span>      , <span class="st">&quot;margin&quot;</span>]
+                  , [<span class="st">&quot;border-left-width&quot;</span> , <span class="st">&quot;border-width&quot;</span>]
+                  , [<span class="st">&quot;border-right-width&quot;</span>, <span class="st">&quot;border-width&quot;</span>]
+                  , [<span class="st">&quot;padding-left&quot;</span>      , <span class="st">&quot;padding&quot;</span>]
+                  , [<span class="st">&quot;padding-right&quot;</span>     , <span class="st">&quot;padding&quot;</span>] ]
+      total <span class="fu">=</span> sum <span class="fu">$</span> map toPx (w<span class="fu">:</span>vals)
+      underflow <span class="fu">=</span> width contBlock <span class="fu">-</span> total
+
+      ([ml&#39;&#39;,mr&#39;&#39;],vals&#39;) <span class="fu">=</span> splitAt <span class="dv">2</span> vals
+      (w&#39;,ml&#39;,mr&#39;) <span class="fu">=</span> checkUnderflow w <span class="fu">$</span> checkAutoMargins (ml&#39;&#39;,mr&#39;&#39;)
+
+      checkAutoMargins (x,y)
+          <span class="fu">|</span> w <span class="fu">/=</span> auto <span class="fu">&amp;&amp;</span> total <span class="fu">&gt;</span> width contBlock <span class="fu">=</span> (check x,check y)
+          <span class="fu">|</span> otherwise <span class="fu">=</span> (x,y)
+        <span class="kw">where</span> check a <span class="fu">=</span> <span class="kw">if</span> a <span class="fu">==</span> auto <span class="kw">then</span> zero <span class="kw">else</span> a
+
+      checkUnderflow w (mlf,mrt) <span class="fu">=</span> <span class="kw">case</span> (w <span class="fu">==</span> auto, mlf <span class="fu">==</span> auto, mrt <span class="fu">==</span> auto) <span class="kw">of</span>
+          (<span class="dt">False</span>,<span class="dt">False</span>,<span class="dt">False</span>) <span class="ot">-&gt;</span> (w , mlf, <span class="dt">Length</span> (toPx mrt <span class="fu">+</span> underflow) <span class="dt">Px</span>)
+          (<span class="dt">False</span>,<span class="dt">False</span>,<span class="dt">True</span>)  <span class="ot">-&gt;</span> (w , mlf, <span class="dt">Length</span> underflow <span class="dt">Px</span>)
+          (<span class="dt">False</span>,<span class="dt">True</span>,<span class="dt">False</span>)  <span class="ot">-&gt;</span> (w , <span class="dt">Length</span> underflow <span class="dt">Px</span>    , mrt)
+          (<span class="dt">False</span>,<span class="dt">True</span>,<span class="dt">True</span>)   <span class="ot">-&gt;</span> (w , <span class="dt">Length</span> (underflow<span class="fu">/</span><span class="dv">2</span>) <span class="dt">Px</span>, <span class="dt">Length</span> (underflow<span class="fu">/</span><span class="dv">2</span>) <span class="dt">Px</span>)
+          (<span class="dt">True</span>,_,_)          <span class="ot">-&gt;</span>
+              <span class="kw">let</span> l <span class="fu">=</span> <span class="kw">if</span> mlf <span class="fu">==</span> auto <span class="kw">then</span> zero <span class="kw">else</span> mlf
+                  r <span class="fu">=</span> <span class="kw">if</span> mrt <span class="fu">==</span> auto <span class="kw">then</span> zero <span class="kw">else</span> mrt
+               <span class="kw">in</span> <span class="kw">if</span> underflow <span class="fu">&gt;=</span> <span class="dv">0</span>  <span class="kw">then</span> (<span class="dt">Length</span> underflow <span class="dt">Px</span>,l,r)
+                                     <span class="kw">else</span> (zero,l,<span class="dt">Length</span> (toPx r <span class="fu">+</span> underflow) <span class="dt">Px</span>)
+
+      [w&#39;&#39;,ml,mr,blw,brw,plf,prt] <span class="fu">=</span> map toPx (w&#39;<span class="fu">:</span>ml&#39;<span class="fu">:</span>mr&#39;<span class="fu">:</span>vals&#39;)
+
+
+      updateDim d <span class="fu">=</span> <span class="kw">let</span> pad <span class="fu">=</span> padding d
+                        mar <span class="fu">=</span> margin d
+                        bor <span class="fu">=</span> border d
+                     <span class="kw">in</span> d{ width <span class="fu">=</span> w&#39;&#39;
+                         , padding <span class="fu">=</span> pad{ left <span class="fu">=</span> plf, right <span class="fu">=</span> prt}
+                         , border  <span class="fu">=</span> bor{ left <span class="fu">=</span> blw, right <span class="fu">=</span> brw}
+                         , margin  <span class="fu">=</span> mar{ left <span class="fu">=</span> ml,  right <span class="fu">=</span> mr} }
+
+    return <span class="fu">$</span> <span class="dt">NTree</span> (updateDim dim,x) y
+
+
+<span class="ot">getStyledElem ::</span> <span class="dt">LayoutBox</span> <span class="ot">-&gt;</span> <span class="dt">Either</span> <span class="dt">T.Text</span> <span class="dt">StyledNode</span>
+getStyledElem (<span class="dt">NTree</span> (_,box) _) <span class="fu">=</span> <span class="kw">case</span> box <span class="kw">of</span>
+    <span class="dt">BlockNode</span>  s   <span class="ot">-&gt;</span> <span class="dt">Right</span> <span class="fu">$</span> <span class="dt">NTree</span> s []
+    <span class="dt">InlineNode</span> s   <span class="ot">-&gt;</span> <span class="dt">Right</span> <span class="fu">$</span> <span class="dt">NTree</span> s []
+    <span class="dt">AnonymousBlock</span> <span class="ot">-&gt;</span> <span class="dt">Left</span> <span class="st">&quot;Error: attempted to access the nonexistant\</span>
+<span class="st">                           \ StyleNode of an AnonymousBlock&quot;</span></code></pre>
+<p>This will probably be refactored to look a bit nicer, something like</p>
+<pre class="sourceCode haskell"><code class="sourceCode haskell"><span class="ot">calcWidth ::</span> <span class="dt">Dimensions</span> <span class="ot">-&gt;</span> <span class="dt">LayoutBox</span> <span class="ot">-&gt;</span> <span class="dt">Either</span> <span class="dt">T.Text</span> <span class="dt">LayoutBox</span>
+calcWidth contBlock root<span class="fu">@</span>(<span class="dt">NTree</span> (dim,x) y) <span class="fu">=</span> checkBounds <span class="fu">&lt;$&gt;</span> getStyledElem rt
+  <span class="kw">where</span>
+    checkBounds <span class="fu">=</span> updateDim <span class="fu">.</span> checkUnderflow <span class="fu">.</span> checkAutoMargins <span class="fu">.</span> computeVals</code></pre>
+<p>The resulting function there won’t be any nicer, but at least you get a quick idea of what it’s doing.</p>
+<p>The remaining functions aren’t as bad.</p>
+<pre class="sourceCode haskell"><code class="sourceCode haskell"><span class="ot">calcPosition ::</span> <span class="dt">Dimensions</span> <span class="ot">-&gt;</span> <span class="dt">LayoutBox</span> <span class="ot">-&gt;</span> <span class="dt">Either</span> <span class="dt">T.Text</span> <span class="dt">LayoutBox</span>
+calcPosition contBlock root<span class="fu">@</span>(<span class="dt">NTree</span> (dim,a)b) <span class="fu">=</span> <span class="kw">do</span>
+    style <span class="ot">&lt;-</span> getStyledElem root
+    
+    <span class="kw">let</span>
+      zero <span class="fu">=</span> <span class="dt">Length</span> <span class="dv">0</span> <span class="dt">Px</span>
+
+      vals <span class="fu">=</span> map (toPx <span class="fu">.</span>  (\a <span class="ot">-&gt;</span> lookup style a zero)) [
+                    [<span class="st">&quot;margin-top&quot;</span>         , <span class="st">&quot;margin&quot;</span>]
+                  , [<span class="st">&quot;margin-bottom&quot;</span>      , <span class="st">&quot;margin&quot;</span>]
+                  , [<span class="st">&quot;border-top-width&quot;</span>   , <span class="st">&quot;border-width&quot;</span>]
+                  , [<span class="st">&quot;border-bottom-width&quot;</span>, <span class="st">&quot;border-width&quot;</span>]
+                  , [<span class="st">&quot;padding-top&quot;</span>        , <span class="st">&quot;padding&quot;</span>]
+                  , [<span class="st">&quot;padding-bottom&quot;</span>     , <span class="st">&quot;padding&quot;</span>] ]
+
+      updateDim d [mt,mb,bt,bb,pt,pb] <span class="fu">=</span>
+          <span class="kw">let</span> pad <span class="fu">=</span> padding d
+              mar <span class="fu">=</span> margin d
+              bor <span class="fu">=</span> border d
+              x&#39; <span class="fu">=</span> x contBlock
+                 <span class="fu">+</span> left (margin d)
+                 <span class="fu">+</span> left (border d)
+                 <span class="fu">+</span> left (padding d)
+              y&#39; <span class="fu">=</span> y contBlock <span class="fu">+</span> height contBlock <span class="fu">+</span> pt <span class="fu">+</span> bt <span class="fu">+</span> mt
+           <span class="kw">in</span> d{ x <span class="fu">=</span> x&#39;
+               , y <span class="fu">=</span> y&#39;
+               , padding <span class="fu">=</span> pad{ top <span class="fu">=</span> pt, bottom <span class="fu">=</span> pb }
+               , border  <span class="fu">=</span> bor{ top <span class="fu">=</span> bt, bottom <span class="fu">=</span> bb }
+               , margin  <span class="fu">=</span> mar{ top <span class="fu">=</span> mt, bottom <span class="fu">=</span> mb } }
+
+    return <span class="fu">$</span> <span class="dt">NTree</span> (updateDim dim vals,a) b
+
+
+<span class="co">-- recursively lay out the children of a node</span>
+layoutChildren (<span class="dt">NTree</span> (dim,x) cs) <span class="fu">=</span> <span class="kw">do</span>
+    (dim&#39;,cs&#39;) <span class="ot">&lt;-</span> foldM foo (dim,[]) cs
+    return <span class="fu">$</span> <span class="dt">NTree</span> (dim&#39;,x) cs&#39;
+
+    <span class="kw">where</span>
+        foo (d,acc) c<span class="fu">@</span>(<span class="dt">NTree</span> (cdim,_) _) <span class="fu">=</span> <span class="kw">do</span>
+            c&#39; <span class="ot">&lt;-</span> layout c d
+            return (d{height <span class="fu">=</span> height d <span class="fu">+</span> marginBoxHeight cdim}, acc <span class="fu">++</span> [c&#39;])
+
+
+<span class="co">-- compute the hight of a box</span>
+<span class="ot">calcHeight ::</span> <span class="dt">LayoutBox</span> <span class="ot">-&gt;</span> <span class="dt">Either</span> <span class="dt">T.Text</span> <span class="dt">LayoutBox</span>
+calcHeight root<span class="fu">@</span>(<span class="dt">NTree</span> (d,x)y) <span class="fu">=</span> <span class="kw">do</span>
+    s <span class="ot">&lt;-</span> getStyledElem root
+    <span class="kw">let</span> d&#39; <span class="fu">=</span> <span class="kw">case</span> value s <span class="st">&quot;height&quot;</span> <span class="kw">of</span>
+             <span class="dt">Just</span> (<span class="dt">Length</span> h <span class="dt">Px</span>)  <span class="ot">-&gt;</span> d{height<span class="fu">=</span>h}
+             <span class="dt">Nothing</span>             <span class="ot">-&gt;</span> d
+    return <span class="fu">$</span> <span class="dt">NTree</span> (d&#39;,x) y
+
+
+<span class="ot">marginBoxHeight ::</span> <span class="dt">Dimensions</span> <span class="ot">-&gt;</span> <span class="dt">Float</span>
+marginBoxHeight (<span class="dt">Dimensions</span> _ _ _ h p b m) <span class="fu">=</span> sum [ h, top p, bottom p
+                                                 , top b, bottom b
+                                                 , top m, bottom m ]</code></pre>
+<p>Worth noting here is that the <code>updateDim</code> function in both <code>calcWidth</code> and <code>calcPosition</code> could be be rewritten using lenses. The <a href="http://hackage.haskell.org/package/lens">Lens</a> library pulls in a ton of dependencies though, so for the moment I won’t be using it (I will probably eventually though, so if you’re following along feel free to start using them whenever); but deeply nested data structures like we’re using will usually be easier to work with if you’re willing to learn how to use lenses.</p>
+<p>It’s also worth pointing out that this isn’t really the ideal Haskell way to construct the tree, which would generally be to build our tree of boxes and a separate tree of dimensions, then zip them together. This would indeed be simpler to write, but unfortunately the spec allows inline boxes to modify their children to avoid overflowing their own bounding box. Since we’re mostly sticking to Robinson’s implementation I want to wait until I see if this behavior is ignored there.</p>
+<p>With that said, we’ve now caught up with Matt’s blog posts and I’m not particularly interested in slowing down, so for the next post I will be going back and making previous modules more comprehensive.</p>
+<p>As usual, you can find the source for this post <a href="https://github.com/Hrothen/Hubert/blob/master/src/Layout.hs">here</a> and the source for Robinson <a href="https://github.com/mbrubeck/robinson">here</a>.</p>
+    
+    <nav id="postNav">
+        
+            <a href="/posts/lets-build-a-browser-engine-in-haskell-part-6.html" style="float:left;">Previous post</a>
+        
+        
+            <a href="/posts/lets-build-a-browser-engine-in-haskell-part-4.html" style="float:right; text-align: right;">Next post</a>
+        
+    </nav>
+</article>]]></summary>
+</entry>
+<entry>
+    <title>Let's Build a Browser Engine in Haskell: part 4</title>
+    <link href="http://hrothen.github.com/posts/lets-build-a-browser-engine-in-haskell-part-4.html" />
+    <id>http://hrothen.github.com/posts/lets-build-a-browser-engine-in-haskell-part-4.html</id>
+    <published>2014-09-23T00:00:00Z</published>
+    <updated>2014-09-23T00:00:00Z</updated>
+    <summary type="html"><![CDATA[<article>
+    <div class="info">
+        Posted on September 23, 2014
+        
+    </div>
+    
+    <p>Hey guys, since I’m trying to stick to the same content per post as Matt’s blog, this post will be pretty short.</p>
+<p>Today we’re going to implement styling of the DOM, wherein we combine a Stylesheet and a DOM tree to create a new DOM, with <code>Rule</code>s attached to its nodes.</p>
+<p>Our imports list is nice and small:</p>
+<pre class="sourceCode haskell"><code class="sourceCode haskell"><span class="kw">module</span> <span class="dt">Style</span> <span class="kw">where</span>
+
+<span class="kw">import </span><span class="dt">Data.Maybe</span> (mapMaybe)
+<span class="kw">import </span><span class="dt">Data.List</span> (sortBy,find)
+
+<span class="kw">import qualified</span> <span class="dt">Data.HashMap.Strict</span> <span class="kw">as</span> <span class="dt">HM</span>
+<span class="kw">import qualified</span> <span class="dt">Data.HashSet</span> <span class="kw">as</span> <span class="dt">HS</span>
+<span class="kw">import qualified</span> <span class="dt">Data.Text</span> <span class="kw">as</span> <span class="dt">T</span>
+
+<span class="kw">import </span><span class="dt">Dom</span>
+<span class="kw">import </span><span class="dt">CSS</span></code></pre>
+<p>We’ll some types, first a map from property names to values</p>
+<pre class="sourceCode haskell"><code class="sourceCode haskell"><span class="kw">type</span> <span class="dt">PropertyMap</span> <span class="fu">=</span> <span class="dt">HM.HashMap</span> <span class="dt">T.Text</span> <span class="dt">Value</span></code></pre>
+<p>Second, the styled tree itself, consisting of a <code>NodeType</code> and a <code>PropertyMap</code> for each node.</p>
+<pre class="sourceCode haskell"><code class="sourceCode haskell"><span class="co">-- instead of building a tree with references to the DOM, we&#39;ll</span>
+<span class="co">-- just augment the DOM tree with PropertyMaps</span>
+<span class="kw">type</span> <span class="dt">StyledNode</span> <span class="fu">=</span> <span class="dt">NTree</span> (<span class="dt">NodeType</span>,<span class="dt">PropertyMap</span>)</code></pre>
+<p>Actually styling the tree is just a map over the elements of our DOM (Later, when we add more CSS features like inheritance, it’ll become a fold instead). We’re using our own custom tree type, so we’ll need to add an instance of <code>Functor</code> back in <code>Dom.hs</code>. We’ll also add some accessors while we’re in there.</p>
+<pre class="sourceCode haskell"><code class="sourceCode haskell"><span class="kw">instance</span> <span class="dt">Functor</span> <span class="dt">NTree</span> <span class="kw">where</span>
+    fmap f (<span class="dt">NTree</span> n ns) <span class="fu">=</span> <span class="dt">NTree</span> (f n) <span class="fu">$</span> fmap (fmap f) ns
+
+<span class="ot">findAttr ::</span> <span class="dt">ElementData</span> <span class="ot">-&gt;</span> <span class="dt">T.Text</span> <span class="ot">-&gt;</span> <span class="dt">Maybe</span> <span class="dt">T.Text</span>
+findAttr (<span class="dt">ElementData</span> _ m) k <span class="fu">=</span> HM.lookup k m
+
+<span class="ot">findID ::</span> <span class="dt">ElementData</span> <span class="ot">-&gt;</span> <span class="dt">Maybe</span> <span class="dt">T.Text</span>
+findID <span class="fu">=</span> flip findAttr <span class="st">&quot;id&quot;</span>
+
+<span class="ot">classes ::</span> <span class="dt">ElementData</span> <span class="ot">-&gt;</span> <span class="dt">HashSet</span> <span class="dt">T.Text</span>
+classes <span class="fu">=</span> maybe empty (fromList <span class="fu">.</span> T.split (<span class="fu">==</span><span class="ch">&#39; &#39;</span>)) <span class="fu">.</span> flip findAttr <span class="st">&quot;class&quot;</span></code></pre>
+<p>And the styling function:</p>
+<pre class="sourceCode haskell"><code class="sourceCode haskell"><span class="co">-- traverse the DOM, attaching PropertyMaps to each Node to</span>
+<span class="co">-- create a styled tree</span>
+<span class="ot">styleTree ::</span> <span class="dt">Node</span> <span class="ot">-&gt;</span> <span class="dt">Stylesheet</span> <span class="ot">-&gt;</span> <span class="dt">StyledNode</span>
+styleTree root stylesheet <span class="fu">=</span> fmap style root
+  <span class="kw">where</span>
+    style e<span class="fu">@</span>(<span class="dt">Element</span> e&#39;) <span class="fu">=</span> (e, specifiedValues e&#39; stylesheet)
+    style t<span class="fu">@</span>(<span class="dt">Text</span> _)     <span class="fu">=</span> (t, HM.empty)</code></pre>
+<p><code>SpecifiedValues</code> finds all the properties attached to an <code>Element</code> and collects them into a <code>PropertyMap</code></p>
+<pre class="sourceCode haskell"><code class="sourceCode haskell"><span class="co">-- Build a map of all the properties attached to an Element</span>
+<span class="ot">specifiedValues ::</span> <span class="dt">ElementData</span> <span class="ot">-&gt;</span> <span class="dt">Stylesheet</span> <span class="ot">-&gt;</span> <span class="dt">PropertyMap</span>
+specifiedValues e s <span class="fu">=</span> HM.fromList <span class="fu">$</span> concatMap expand rules
+  <span class="kw">where</span>
+    rules <span class="fu">=</span> sortBy (compare <span class="ot">`on`</span> fst) <span class="fu">$</span> matchingRules e s
+    expand (_,<span class="dt">Rule</span> _ ds) <span class="fu">=</span> map (\(<span class="dt">Declaration</span> n v) <span class="ot">-&gt;</span> (n,v)) ds
+
+
+<span class="kw">type</span> <span class="dt">MatchedRule</span> <span class="fu">=</span> (<span class="dt">Specificity</span>, <span class="dt">Rule</span>)
+
+<span class="co">-- get all of the rules from a stylesheet that match the given element</span>
+<span class="ot">matchingRules ::</span> <span class="dt">ElementData</span> <span class="ot">-&gt;</span> <span class="dt">Stylesheet</span> <span class="ot">-&gt;</span> [<span class="dt">MatchedRule</span>]
+matchingRules e (<span class="dt">Stylesheet</span> rules) <span class="fu">=</span> mapMaybe (matchRule e) rules
+
+<span class="co">-- find the first rule that matches the given element</span>
+<span class="ot">matchRule ::</span> <span class="dt">ElementData</span> <span class="ot">-&gt;</span> <span class="dt">Rule</span> <span class="ot">-&gt;</span> <span class="dt">Maybe</span> <span class="dt">MatchedRule</span>
+matchRule e r<span class="fu">@</span>(<span class="dt">Rule</span> selectors _) <span class="fu">=</span> <span class="kw">do</span>
+    s <span class="ot">&lt;-</span> find (matches e) selectors
+    return (spec s, r)
+
+<span class="co">-- check if a selector matches an element</span>
+<span class="ot">matches ::</span> <span class="dt">ElementData</span> <span class="ot">-&gt;</span> <span class="dt">Selector</span> <span class="ot">-&gt;</span> <span class="dt">Bool</span>
+matches e sl<span class="fu">@</span>(<span class="dt">Simple</span> _ _ _) <span class="fu">=</span> matchSimple e sl</code></pre>
+<p>That’s all pretty simple stuff, the remaining function to implement, <code>matchSimple</code> is more annoying. Here’s Matt’s code for this function in Robinson:</p>
+<pre class="sourceCode rust"><code class="sourceCode rust"><span class="kw">fn</span> matches_simple_selector(elem: &amp;ElementData, selector: &amp;SimpleSelector) -&gt; <span class="kw">bool</span> {
+    <span class="co">// Check type selector</span>
+    <span class="kw">if</span> selector.tag_name.iter().any(|name| elem.tag_name != *name) {
+        <span class="kw">return</span> <span class="kw">false</span>;
+    }
+
+    <span class="co">// Check ID selector</span>
+    <span class="kw">if</span> selector.id.iter().any(|id| elem.id() != <span class="kw">Some</span>(id)) {
+        <span class="kw">return</span> <span class="kw">false</span>;
+    }
+
+    <span class="co">// Check class selectors</span>
+    <span class="kw">let</span> elem_classes = elem.classes();
+    <span class="kw">if</span> selector.class.iter().any(|class| !elem_classes.contains(&amp;class.as_slice())) {
+        <span class="kw">return</span> <span class="kw">false</span>;
+    }
+
+    <span class="co">// We didn&#39;t find any non-matching selector components.</span>
+    <span class="kw">return</span> <span class="kw">true</span>;
+}</code></pre>
+<p>It’s non-obvious from reading this code what exactly constitutes an acceptable match, primarily because <code>iter().any()</code> silently drops out of the <code>Optional</code> type, it always returns False for <code>None</code>. It looks like <code>matches_simple_selector</code> is looking to check that everything matches, but what it’s actually doing is checking that a simple selector doesn’t have any fields that <em>don’t</em> match, values of <code>None</code> are skipped instead of counted as match failures. The recommended way to deal with optionals in Rust is to explicitly pattern match against them, which would have made this behavior a little more obvious.</p>
+<p>Our Haskell equivalent is <em>a teeny bit ugly</em></p>
+<pre class="sourceCode haskell"><code class="sourceCode haskell"><span class="co">-- matchSimple returns False if any selector field that exists</span>
+<span class="co">-- does not match the given element</span>
+<span class="ot">matchSimple ::</span> <span class="dt">ElementData</span> <span class="ot">-&gt;</span> <span class="dt">Selector</span> <span class="ot">-&gt;</span> <span class="dt">Bool</span>
+matchSimple e<span class="fu">@</span>(<span class="dt">ElementData</span> nm _) (<span class="dt">Simple</span> n i c) <span class="fu">=</span> 
+  <span class="kw">let</span> x <span class="fu">=</span> fmap (<span class="fu">==</span>nm) n
+      y <span class="fu">=</span> <span class="kw">if</span> i <span class="fu">==</span> <span class="dt">Nothing</span> <span class="kw">then</span> <span class="dt">Nothing</span> <span class="kw">else</span> <span class="dt">Just</span> <span class="fu">$</span> i <span class="fu">==</span> (findID e)
+      z <span class="fu">=</span> <span class="kw">if</span> not <span class="fu">$</span> null c <span class="kw">then</span> all (flip HS.member (classes e)) c <span class="kw">else</span> <span class="dt">True</span>
+  <span class="kw">in</span> <span class="kw">case</span> (x,y,z) <span class="kw">of</span>
+      (<span class="dt">Nothing</span>, <span class="dt">Nothing</span>, b3) <span class="ot">-&gt;</span> b3
+      (<span class="dt">Nothing</span>, <span class="dt">Just</span> b2, b3) <span class="ot">-&gt;</span> b2 <span class="fu">&amp;&amp;</span> b3
+      (<span class="dt">Just</span> b1, <span class="dt">Nothing</span>, b3) <span class="ot">-&gt;</span> b1 <span class="fu">&amp;&amp;</span> b3
+      (<span class="dt">Just</span> b1, <span class="dt">Just</span> b2, b3) <span class="ot">-&gt;</span> b1 <span class="fu">&amp;&amp;</span> b2 <span class="fu">&amp;&amp;</span> b3</code></pre>
+<p>That’s not totally illegible, but it’s not great. We could be more explicit by pattern matching on the function arguments like this:</p>
+<pre class="sourceCode haskell"><code class="sourceCode haskell">matchSimple e (<span class="dt">Simple</span> <span class="dt">Nothing</span>  <span class="dt">Nothing</span>  c) <span class="fu">=</span>  matchClasses e c
+matchSimple e (<span class="dt">Simple</span> (<span class="dt">Just</span> n) <span class="dt">Nothing</span>  c) <span class="fu">=</span>  matchNames e n
+                                           <span class="fu">&amp;&amp;</span> matchClasses e c
+matchSimple e (<span class="dt">Simple</span> <span class="dt">Nothing</span> (<span class="dt">Just</span> i)  c) <span class="fu">=</span>  matchId e i
+                                           <span class="fu">&amp;&amp;</span> matchClasses e c
+matchSimple e (<span class="dt">Simple</span> (<span class="dt">Just</span> n) (<span class="dt">Just</span> i) c) <span class="fu">=</span>  matchNames e n
+                                           <span class="fu">&amp;&amp;</span> matchId e i
+                                           <span class="fu">&amp;&amp;</span> matchClasses e c
+
+matchNames (<span class="dt">ElementData</span> nm _) n <span class="fu">=</span> n <span class="fu">==</span> nm
+
+matchId e i <span class="fu">=</span> findID e <span class="fu">==</span> <span class="dt">Just</span> i
+
+matchClasses e [] <span class="fu">=</span> <span class="dt">True</span>
+matchClasses e c <span class="fu">=</span> all (flip HS.member (classes e)) c</code></pre>
+<p>I personally don’t really feel like this version is much easier to read, but it does feel a little better.</p>
+<p>Finally we’ll add another really simple test.</p>
+<pre class="sourceCode haskell"><code class="sourceCode haskell">
+testStyle <span class="fu">=</span> <span class="dt">TestCase</span> <span class="fu">$</span> assertEqual <span class="st">&quot;styletree&quot;</span> styletree <span class="fu">$</span> styleTree dom css2 
+
+css2 <span class="fu">=</span> <span class="dt">Stylesheet</span> [ <span class="dt">Rule</span> [ <span class="dt">Simple</span> (<span class="dt">Just</span> <span class="st">&quot;head&quot;</span>) <span class="dt">Nothing</span> [] ]
+                         [ <span class="dt">Declaration</span> <span class="st">&quot;margin&quot;</span> (<span class="dt">Keyword</span> <span class="st">&quot;auto&quot;</span>)
+                         , <span class="dt">Declaration</span> <span class="st">&quot;color&quot;</span>  (<span class="dt">Color</span> <span class="dv">0</span> <span class="dv">0</span> <span class="dv">0</span> <span class="dv">255</span>) ]
+                  , <span class="dt">Rule</span> [ <span class="dt">Simple</span> (<span class="dt">Just</span> <span class="st">&quot;p&quot;</span>) <span class="dt">Nothing</span> [<span class="st">&quot;inner&quot;</span>] ]
+                         [ <span class="dt">Declaration</span> <span class="st">&quot;padding&quot;</span> (<span class="dt">Length</span> <span class="dv">17</span> <span class="dt">Px</span>) ] ]
+
+styletree <span class="fu">=</span> <span class="dt">NTree</span> (<span class="dt">Element</span> (<span class="dt">ElementData</span> <span class="st">&quot;html&quot;</span> empt),empt) [head,p1,p2]
+  <span class="kw">where</span>
+    head    <span class="fu">=</span> <span class="dt">NTree</span> (<span class="dt">Element</span> (<span class="dt">ElementData</span> <span class="st">&quot;head&quot;</span> empt),rule1) [title]
+    title   <span class="fu">=</span> <span class="dt">NTree</span> (<span class="dt">Element</span> (<span class="dt">ElementData</span> <span class="st">&quot;title&quot;</span> empt),empt) [test&#39;]
+    test&#39;   <span class="fu">=</span> <span class="dt">NTree</span> (<span class="dt">Text</span> <span class="st">&quot;Test&quot;</span>,empt) []
+    p1      <span class="fu">=</span> <span class="dt">NTree</span> (<span class="dt">Element</span> (<span class="dt">ElementData</span> <span class="st">&quot;p&quot;</span> (HM.singleton <span class="st">&quot;class&quot;</span> <span class="st">&quot;inner&quot;</span>)),rule2) [hello,span]
+    hello   <span class="fu">=</span> <span class="dt">NTree</span> (<span class="dt">Text</span> <span class="st">&quot;Hello, &quot;</span>,empt) []
+    span    <span class="fu">=</span> <span class="dt">NTree</span> (<span class="dt">Element</span> (<span class="dt">ElementData</span> <span class="st">&quot;span&quot;</span> (HM.singleton <span class="st">&quot;id&quot;</span> <span class="st">&quot;name&quot;</span>)),empt) [world]
+    world   <span class="fu">=</span> <span class="dt">NTree</span> (<span class="dt">Text</span> <span class="st">&quot;world!&quot;</span>,empt) []
+    p2      <span class="fu">=</span> <span class="dt">NTree</span> (<span class="dt">Element</span> (<span class="dt">ElementData</span> <span class="st">&quot;p&quot;</span> (HM.singleton <span class="st">&quot;class&quot;</span> <span class="st">&quot;inner&quot;</span>)),rule2) [goodbye]
+    goodbye <span class="fu">=</span> <span class="dt">NTree</span> (<span class="dt">Text</span> <span class="st">&quot;Goodbye!\n    &quot;</span>,empt) []
+    empt    <span class="fu">=</span> HM.empty
+    rule1   <span class="fu">=</span> HM.fromList [(<span class="st">&quot;margin&quot;</span>,<span class="dt">Keyword</span> <span class="st">&quot;auto&quot;</span>),(<span class="st">&quot;color&quot;</span>,<span class="dt">Color</span> <span class="dv">0</span> <span class="dv">0</span> <span class="dv">0</span> <span class="dv">255</span>)]
+    rule2   <span class="fu">=</span> HM.singleton <span class="st">&quot;padding&quot;</span> (<span class="dt">Length</span> <span class="dv">17</span> <span class="dt">Px</span>)</code></pre>
+<p>The covers the entire Styling module, next time we’ll start building the Layout tree as we close in on actually getting something we can render.</p>
+<h1 id="addendum-linting">Addendum: Linting</h1>
+<p>I often forget that I have a linter installed (the Haskell Platform comes with Hlint), so I haven’t been linting the code for hubert up until this point. It’s generally a good idea to do so though, so let’s run Hlint real quick.</p>
+<pre class="sourceCode bash"><code class="sourceCode bash"><span class="kw">hlint</span> src --report</code></pre>
+<p>Hlint will write all its complaints to your terminal, but it also generates a file <code>report.html</code>. For me Hlint found 9 things to complain about, let’s go through and fix them.</p>
+<pre><code>src\Css.hs:81:13: Warning: Redundant bracket
+Found
+(sortBy comp) &lt;$&gt; sepBy1 (selector &lt;* spaces) comma
+Why not
+sortBy comp &lt;$&gt; sepBy1 (selector &lt;* spaces) comma
+
+ src\Css.hs:106:8: Warning: Use void
+Found
+char &#39;*&#39; &gt;&gt; return ()
+Why not
+Control.Monad.void (char &#39;*&#39;)
+
+src\Css.hs:139:44: Warning: Redundant bracket
+Found
+digit &lt;|&gt; (char &#39;.&#39;)
+Why not
+digit &lt;|&gt; char &#39;.&#39;
+
+src\Css.hs:162:26: Warning: Redundant bracket
+Found
+(notFollowedBy end) *&gt; p
+Why not
+notFollowedBy end *&gt; p
+
+src\Dom.hs:36:1: Error: Eta reduce
+Found
+elem name atts cs = NTree (Element (ElementData name atts)) cs
+Why not
+elem name atts = NTree (Element (ElementData name atts))
+
+src\Style.hs:47:24: Warning: Use section
+Found
+(flip HS.member (classes e))
+Why not
+(`HS.member` (classes e))
+
+src\Html\Parsec.hs:30:20: Warning: Use void
+Found
+try (string &quot;&lt;/&quot;) &gt;&gt; return ()
+Why not
+Control.Monad.void (try (string &quot;&lt;/&quot;))
+
+src\Html\Parser.hs:27:1: Error: Eta reduce
+Found
+runParserS p s = evalState (runExceptT p) s
+Why not
+runParserS p = evalState (runExceptT p)
+
+src\Html\Parser.hs:62:14: Error: Use unless
+Found
+if b then return () else throwError s
+Why not
+Control.Monad.unless b $ throwError s</code></pre>
+<p>I’ll make all these changes except for one: I’m not going to change <code>(flip HS.member (classes e))</code> to <code>(`HS.member` (classes e))</code> because it doesn’t really seem any better to me (possibly because Sublime refuses to color it). You can go ahead and make the change if you want. I’ll try to remember to lint as I go from now on, so we can avoid these interludes in the future.</p>
+<p>As usual, you can find the source for this post <a href="https://github.com/Hrothen/Hubert/blob/master/src/Style.hs">here</a> and the source for Robinson <a href="https://github.com/mbrubeck/robinson">here</a>.</p>
+    
+    <nav id="postNav">
+        
+            <a href="/posts/lets-build-a-browser-engine-in-haskell-part-5.html" style="float:left;">Previous post</a>
+        
+        
+            <a href="/posts/lets-build-a-browser-engine-in-haskell-part-3.html" style="float:right; text-align: right;">Next post</a>
+        
+    </nav>
+</article>]]></summary>
+</entry>
+<entry>
+    <title>Let's Build a Browser Engine in Haskell: part 3</title>
+    <link href="http://hrothen.github.com/posts/lets-build-a-browser-engine-in-haskell-part-3.html" />
+    <id>http://hrothen.github.com/posts/lets-build-a-browser-engine-in-haskell-part-3.html</id>
+    <published>2014-09-19T00:00:00Z</published>
+    <updated>2014-09-19T00:00:00Z</updated>
+    <summary type="html"><![CDATA[<article>
+    <div class="info">
+        Posted on September 19, 2014
+        
+    </div>
+    
+    <p>Now that we’ve got some <a href="lets-build-a-browser-engine-in-haskell-setting-up-tests.html">tests set up</a>, we’re ready to write a CSS parser. But first, I’d like to take a minute to talk about <code>Control.Applicative</code> and some of the combinators it contains. Applicative combinators are really useful for building parsers, but tend to look a lot like voodoo when presented without explanation. We’ve already used <code>Parsec</code>’s <code>&lt;|&gt;</code> combinator, which tries the parser on its left, and then the one on its right if the first fails. In writing our CSS parser, we’ll also use the following operators:</p>
+<ul>
+<li><code>&lt;$&gt;</code> is an operator synonym for <code>fmap</code>.</li>
+<li><code>*&gt;</code> performs the action on it’s left, and then the action on its right, ignoring the result of the first action. It is equivalent to <code>&gt;&gt;</code> on monads.</li>
+<li><code>&lt;*</code> performs the action on its left, then the action on its right, and returns the result of the first action. It is equivalent to the monadic expression <code>do{ f &lt;- foo; bar; return f}</code>.</li>
+<li><code>&lt;*&gt;</code> takes a binary function inside an <code>Applicative</code> on its left, and an argument to that function, also inside an <code>Applicative</code> on the right.</li>
+</ul>
+<p>We mostly use <code>*&gt;</code> and <code>&lt;*</code> for parsers where we need to parse something but don’t care about holding on to it, like trailing whitespace, or separators. <code>&lt;$&gt;</code> and <code>&lt;*&gt;</code> are useful for collecting the results of multiple parsers, for some type <code>Foo</code> we can write <code>Foo &lt;$&gt; bar &lt;*&gt; baz &lt;*&gt; quux</code> instead of</p>
+<pre class="sourceCode haskell"><code class="sourceCode haskell">a <span class="ot">&lt;-</span> bar
+b <span class="ot">&lt;-</span> baz
+c <span class="ot">&lt;-</span> quux
+return <span class="fu">$</span> <span class="dt">Foo</span> a b c</code></pre>
+<p>We could also write that as <code>LiftA3 Foo bar baz quux</code>.</p>
+<p>Everyone has trouble with <code>Applicative</code> stuff for a while (it doesn’t help that they make it <em>really</em> easy to write illegible code), so don’t feel bad if you don’t really get it right now.</p>
+<p>We’re now ready to start on the parser. First, the module definition and imports:</p>
+<pre class="sourceCode haskell"><code class="sourceCode haskell"><span class="ot">{-# LANGUAGE FlexibleContexts, NoMonomorphismRestriction #-}</span>
+<span class="kw">module</span> <span class="dt">CSS</span>
+    ( <span class="dt">Stylesheet</span>(<span class="fu">..</span>)
+    , <span class="dt">Rule</span>(<span class="fu">..</span>)
+    , <span class="dt">Selector</span>(<span class="fu">..</span>)
+    , <span class="dt">Declaration</span>(<span class="fu">..</span>)
+    , <span class="dt">Value</span>(<span class="fu">..</span>)
+    , <span class="dt">Unit</span>(<span class="fu">..</span>)
+    , parseCSS
+    , selectors
+    , declarations
+    ) <span class="kw">where</span>
+
+<span class="kw">import </span><span class="dt">Prelude</span> <span class="kw">hiding</span> (id)
+
+<span class="kw">import </span><span class="dt">Data.Word</span> (<span class="dt">Word</span>(..), <span class="dt">Word8</span>(..))
+<span class="kw">import </span><span class="dt">Data.List</span> (sortBy)
+<span class="kw">import </span><span class="dt">Data.Maybe</span> (maybe)
+<span class="kw">import </span><span class="dt">Numeric</span> (readFloat, readHex)
+<span class="kw">import </span><span class="dt">Control.Applicative</span> ((&lt;*), (*&gt;), (&lt;$&gt;), (&lt;*&gt;))
+
+<span class="kw">import </span><span class="dt">Text.Parsec</span>
+<span class="kw">import </span><span class="dt">Text.Parsec.Text</span>
+
+<span class="kw">import qualified</span> <span class="dt">Data.Text</span> <span class="kw">as</span> <span class="dt">T</span></code></pre>
+<p>We’ll create some simple types to represent our CSS:</p>
+<pre class="sourceCode haskell"><code class="sourceCode haskell"><span class="kw">data</span> <span class="dt">Stylesheet</span> <span class="fu">=</span> <span class="dt">Stylesheet</span> [<span class="dt">Rule</span>]
+  <span class="kw">deriving</span> (<span class="dt">Show</span>, <span class="dt">Eq</span>)
+
+<span class="kw">data</span> <span class="dt">Rule</span> <span class="fu">=</span> <span class="dt">Rule</span> [<span class="dt">Selector</span>] [<span class="dt">Declaration</span>]
+  <span class="kw">deriving</span> (<span class="dt">Show</span>, <span class="dt">Eq</span>)
+
+<span class="co">-- only handle simple selectors for now</span>
+<span class="kw">data</span> <span class="dt">Selector</span> <span class="fu">=</span> <span class="dt">Simple</span> (<span class="dt">Maybe</span> <span class="dt">T.Text</span>) (<span class="dt">Maybe</span> <span class="dt">T.Text</span>) [<span class="dt">T.Text</span>]
+  <span class="kw">deriving</span> (<span class="dt">Show</span>, <span class="dt">Eq</span>)
+
+<span class="kw">data</span> <span class="dt">Declaration</span> <span class="fu">=</span> <span class="dt">Declaration</span> <span class="dt">T.Text</span> <span class="dt">Value</span>
+  <span class="kw">deriving</span> (<span class="dt">Show</span>, <span class="dt">Eq</span>)
+
+<span class="kw">data</span> <span class="dt">Value</span> <span class="fu">=</span> <span class="dt">Keyword</span> <span class="dt">T.Text</span>
+           <span class="fu">|</span> <span class="dt">Color</span> <span class="dt">Word8</span> <span class="dt">Word8</span> <span class="dt">Word8</span> <span class="dt">Word8</span>
+           <span class="fu">|</span> <span class="dt">Length</span> <span class="dt">Float</span> <span class="dt">Unit</span>
+  <span class="kw">deriving</span> (<span class="dt">Show</span>, <span class="dt">Eq</span>)
+
+<span class="kw">data</span> <span class="dt">Unit</span> <span class="fu">=</span> <span class="dt">Px</span> <span class="co">--only Px for now</span>
+  <span class="kw">deriving</span> (<span class="dt">Show</span>, <span class="dt">Eq</span>)
+
+<span class="co">-- an empty selector</span>
+nilS <span class="fu">=</span> <span class="dt">Simple</span> <span class="dt">Nothing</span> <span class="dt">Nothing</span> []</code></pre>
+<p>Note that because we don’t want to move too far away from how Robinson works, we’re actually going to be parsing only CSS2 simple selectors instead of following the more complicated CSS3 spec, for now.</p>
+<p>The top level parser looks remarkably familiar</p>
+<pre class="sourceCode haskell"><code class="sourceCode haskell"><span class="co">-- parse an entire CSS document into a Stylesheet</span>
+<span class="ot">parseCSS ::</span> <span class="dt">T.Text</span> <span class="ot">-&gt;</span> <span class="dt">Either</span> <span class="dt">ParseError</span> <span class="dt">Stylesheet</span>
+parseCSS css <span class="fu">=</span> <span class="kw">case</span> runParser rules nilS <span class="st">&quot;&quot;</span> css <span class="kw">of</span>
+    <span class="dt">Left</span> err <span class="ot">-&gt;</span> <span class="dt">Left</span> err
+    <span class="dt">Right</span> rs <span class="ot">-&gt;</span> <span class="dt">Right</span> (<span class="dt">Stylesheet</span> rs)
+
+rules <span class="fu">=</span> spaces <span class="fu">&gt;&gt;</span> manyTill (rule <span class="fu">&lt;*</span> spaces) eof</code></pre>
+<p>A <code>Rule</code> is just a list of <code>Selector</code>s, and a list of <code>Declaration</code>s</p>
+<pre class="sourceCode haskell"><code class="sourceCode haskell">rule <span class="fu">=</span> <span class="dt">Rule</span> <span class="fu">&lt;$&gt;</span> selectors <span class="fu">&lt;*&gt;</span> declarations</code></pre>
+<p>Selectors are in a comma separated list</p>
+<pre class="sourceCode haskell"><code class="sourceCode haskell">selectors <span class="fu">=</span> (sortBy comp) <span class="fu">&lt;$&gt;</span> sepBy1 (selector <span class="fu">&lt;*</span> spaces) comma
+  <span class="kw">where</span> comma <span class="fu">=</span> char <span class="ch">&#39;,&#39;</span> <span class="fu">&lt;*</span> spaces
+        comp a b <span class="fu">=</span> spec a <span class="ot">`compare`</span> spec b</code></pre>
+<p>We sort the parsed selectors by their specificity</p>
+<pre class="sourceCode haskell"><code class="sourceCode haskell"><span class="kw">type</span> <span class="dt">Specificity</span> <span class="fu">=</span> (<span class="dt">Word</span>,<span class="dt">Word</span>,<span class="dt">Word</span>)
+
+<span class="co">-- compute the specificity of a Selector</span>
+<span class="ot">spec ::</span> <span class="dt">Selector</span> <span class="ot">-&gt;</span> <span class="dt">Specificity</span>
+spec (<span class="dt">Simple</span> name id cls) <span class="fu">=</span> (maybeLen id, fromIntegral <span class="fu">$</span> length cls, maybeLen name)
+  <span class="kw">where</span> maybeLen <span class="fu">=</span> fromIntegral <span class="fu">.</span> maybe <span class="dv">0</span> T.length</code></pre>
+<p>In order to actually build the <code>Selector</code>, we’ll take advantage of the fact that the <code>Parsec</code> monad transformer includes a <code>StateT</code> for user state.</p>
+<pre class="sourceCode haskell"><code class="sourceCode haskell"><span class="co">-- manyTill, but the terminal parser is optional</span>
+manyUnless p end <span class="fu">=</span> many ((notFollowedBy end) <span class="fu">*&gt;</span> p)
+
+<span class="co">-- parse a simple selector</span>
+selector <span class="fu">=</span> <span class="kw">do</span>
+    putState nilS
+    manyUnless (id <span class="fu">&lt;|&gt;</span> cls <span class="fu">&lt;|&gt;</span> univ <span class="fu">&lt;|&gt;</span> name) eof
+    getState
+
+
+<span class="co">-- selector id</span>
+id <span class="fu">=</span> <span class="kw">do</span>
+    char <span class="ch">&#39;#&#39;</span>
+    i <span class="ot">&lt;-</span> identifier
+    modifyState (\(<span class="dt">Simple</span> n _ cs) <span class="ot">-&gt;</span> <span class="dt">Simple</span> n (<span class="dt">Just</span> i) cs)
+
+<span class="co">-- selector class</span>
+cls <span class="fu">=</span> <span class="kw">do</span>
+    char <span class="ch">&#39;.&#39;</span>
+    c <span class="ot">&lt;-</span> identifier
+    modifyState (\(<span class="dt">Simple</span> n i cs) <span class="ot">-&gt;</span> <span class="dt">Simple</span> n i (cs<span class="fu">++</span>[c]))
+
+<span class="co">-- universal selector</span>
+univ <span class="fu">=</span> char <span class="ch">&#39;*&#39;</span> <span class="fu">&gt;&gt;</span> return ()
+
+<span class="co">-- selector name</span>
+name <span class="fu">=</span> <span class="kw">do</span>
+    n&#39; <span class="ot">&lt;-</span> validId
+    n  <span class="ot">&lt;-</span> identifier
+    <span class="kw">let</span> nm <span class="fu">=</span> n&#39; <span class="ot">`T.cons`</span> n
+    modifyState (\(<span class="dt">Simple</span> _ i cs) <span class="ot">-&gt;</span> <span class="dt">Simple</span> (<span class="dt">Just</span> nm) i cs)</code></pre>
+<p>Declarations are parsed from a semicolon separated list bracketed by curly braces.</p>
+<pre class="sourceCode haskell"><code class="sourceCode haskell">declarations <span class="fu">=</span> <span class="kw">do</span>
+    char <span class="ch">&#39;{&#39;</span>
+    spaces <span class="fu">*&gt;</span> manyTill (declaration <span class="fu">&lt;*</span> spaces) (char <span class="ch">&#39;}&#39;</span>)
+
+
+declaration <span class="fu">=</span> <span class="kw">do</span>
+    n <span class="ot">&lt;-</span> identifier
+    spaces <span class="fu">&gt;&gt;</span> char <span class="ch">&#39;:&#39;</span> <span class="fu">&gt;&gt;</span> spaces
+    v <span class="ot">&lt;-</span> value
+    spaces <span class="fu">&gt;&gt;</span> char <span class="ch">&#39;;&#39;</span>
+    return <span class="fu">$</span> <span class="dt">Declaration</span> n v
+
+value <span class="fu">=</span> len <span class="fu">&lt;|&gt;</span> color <span class="fu">&lt;|&gt;</span> keyword
+
+len <span class="fu">=</span> <span class="dt">Length</span> <span class="fu">&lt;$&gt;</span> float <span class="fu">&lt;*&gt;</span> unit
+
+<span class="co">-- parse a floating point number</span>
+<span class="ot">float ::</span> <span class="dt">Stream</span> s m <span class="dt">Char</span> <span class="ot">=&gt;</span> <span class="dt">ParsecT</span> s u m <span class="dt">Float</span>
+float <span class="fu">=</span> (fst <span class="fu">.</span> head <span class="fu">.</span> readFloat) <span class="fu">&lt;$&gt;</span> many (digit <span class="fu">&lt;|&gt;</span> (char <span class="ch">&#39;.&#39;</span>))
+
+<span class="co">-- parse the unit type in a Value</span>
+<span class="co">-- currently only Px is supported</span>
+unit <span class="fu">=</span> <span class="kw">do</span>
+    char <span class="ch">&#39;p&#39;</span> <span class="fu">&lt;|&gt;</span> char <span class="ch">&#39;P&#39;</span>
+    char <span class="ch">&#39;x&#39;</span> <span class="fu">&lt;|&gt;</span> char <span class="ch">&#39;X&#39;</span>
+    return <span class="dt">Px</span>
+
+
+color <span class="fu">=</span> <span class="kw">do</span>
+    char <span class="ch">&#39;#&#39;</span>
+    cs <span class="ot">&lt;-</span> count <span class="dv">3</span> (count <span class="dv">2</span> hexDigit)
+    <span class="kw">let</span> [r,g,b] <span class="fu">=</span> map (fst <span class="fu">.</span> head <span class="fu">.</span> readHex) cs
+    return <span class="fu">$</span> <span class="dt">Color</span> r g b <span class="dv">255</span>
+
+keyword <span class="fu">=</span> <span class="dt">Keyword</span> <span class="fu">&lt;$&gt;</span> identifier
+
+identifier <span class="fu">=</span> T.pack <span class="fu">&lt;$&gt;</span> many validId
+
+validId <span class="fu">=</span> alphaNum <span class="fu">&lt;|&gt;</span> char <span class="ch">&#39;-&#39;</span> <span class="fu">&lt;|&gt;</span> char <span class="ch">&#39;_&#39;</span></code></pre>
+<p>For some reason Parsec doesn’t have built in number parsers, so we have to fall back to the read functions from <code>Numeric</code></p>
+<p>That’s the whole CSS parser, let’s add a test for it</p>
+<pre class="sourceCode haskell"><code class="sourceCode haskell">css <span class="fu">=</span> <span class="st">&quot;h1, h2, h3 { margin: auto; color: #cc0000; }\n\</span>
+<span class="st">      \div.note { margin-bottom: 20px; padding: 10px; }\n\</span>
+<span class="st">      \#answer { display: none; }&quot;</span>
+
+sheet <span class="fu">=</span> <span class="dt">Stylesheet</span> [ <span class="dt">Rule</span> [ <span class="dt">Simple</span> (<span class="dt">Just</span> <span class="st">&quot;h1&quot;</span>) <span class="dt">Nothing</span> []
+                          , <span class="dt">Simple</span> (<span class="dt">Just</span> <span class="st">&quot;h2&quot;</span>) <span class="dt">Nothing</span> []
+                          , <span class="dt">Simple</span> (<span class="dt">Just</span> <span class="st">&quot;h3&quot;</span>) <span class="dt">Nothing</span> [] ]
+                          [ <span class="dt">Declaration</span> <span class="st">&quot;margin&quot;</span> (<span class="dt">Keyword</span> <span class="st">&quot;auto&quot;</span>)
+                          , <span class="dt">Declaration</span> <span class="st">&quot;color&quot;</span>  (<span class="dt">Color</span> <span class="dv">204</span> <span class="dv">0</span> <span class="dv">0</span> <span class="dv">255</span>) ]
+                   , <span class="dt">Rule</span> [ <span class="dt">Simple</span> (<span class="dt">Just</span> <span class="st">&quot;div&quot;</span>) <span class="dt">Nothing</span> [<span class="st">&quot;note&quot;</span>] ]
+                          [ <span class="dt">Declaration</span> <span class="st">&quot;margin-bottom&quot;</span> (<span class="dt">Length</span> <span class="dv">20</span> <span class="dt">Px</span>)
+                          , <span class="dt">Declaration</span> <span class="st">&quot;padding&quot;</span> (<span class="dt">Length</span> <span class="dv">10</span> <span class="dt">Px</span>) ]
+                   , <span class="dt">Rule</span> [ <span class="dt">Simple</span> <span class="dt">Nothing</span> (<span class="dt">Just</span> <span class="st">&quot;answer&quot;</span>) [] ]
+                          [ <span class="dt">Declaration</span> <span class="st">&quot;display&quot;</span> (<span class="dt">Keyword</span> <span class="st">&quot;none&quot;</span>) ] ]
+
+testCss <span class="fu">=</span> parseTest <span class="st">&quot;for valid css&quot;</span> sheet <span class="fu">$</span> parseCSS css</code></pre>
+<p>And if I’ve copied everything here correctly, that test will pass.</p>
+<p>That’s all for CSS parsing, next time we’ll work on combining the Dom and Stylesheet into a single Layout.</p>
+<p>As usual, you can find the source for this post <a href="https://github.com/Hrothen/Hubert/blob/master/src/Css.hs">here</a> and the source for Robinson <a href="https://github.com/mbrubeck/robinson">here</a>.</p>
+    
+    <nav id="postNav">
+        
+            <a href="/posts/lets-build-a-browser-engine-in-haskell-part-4.html" style="float:left;">Previous post</a>
+        
+        
+            <a href="/posts/lets-build-a-browser-engine-in-haskell-setting-up-tests.html" style="float:right; text-align: right;">Next post</a>
+        
+    </nav>
+</article>]]></summary>
+</entry>
+<entry>
+    <title>Let's Build a Browser Engine in Haskell: setting up tests</title>
+    <link href="http://hrothen.github.com/posts/lets-build-a-browser-engine-in-haskell-setting-up-tests.html" />
+    <id>http://hrothen.github.com/posts/lets-build-a-browser-engine-in-haskell-setting-up-tests.html</id>
+    <published>2014-09-14T00:00:00Z</published>
+    <updated>2014-09-14T00:00:00Z</updated>
+    <summary type="html"><![CDATA[<article>
+    <div class="info">
+        Posted on September 14, 2014
+        
+    </div>
+    
+    <p>Welcome back. In <a href="lets-build-a-browser-engine-in-haskell-part-2.html">part 2</a> we wrote an html parser two different ways, and decided to implement some tests before going any further. Let’s do that now.</p>
+<h1 id="setting-up-some-simple-tests">Setting up some simple tests</h1>
+<p>We’ll create a file <code>tests.hs</code> in a new folder <code>/tests</code>, to keep our test code separate. We’ll be using the <a href="http://hackage.haskell.org/package/HUnit">HUnit</a> test framework, which is included in the Haskell Platform. As usual, we’ll start off with the imports:</p>
+<pre class="sourceCode haskell"><code class="sourceCode haskell"><span class="ot">{-# LANGUAGE OverloadedStrings #-}</span>
+<span class="kw">module</span> <span class="dt">Main</span> <span class="kw">where</span>
+
+<span class="kw">import </span><span class="dt">Prelude</span> <span class="kw">hiding</span> (elem)
+<span class="kw">import </span><span class="dt">Data.Either</span> (either)
+
+<span class="kw">import </span><span class="dt">Test.HUnit</span>
+
+<span class="kw">import </span><span class="dt">Text.Parsec</span> <span class="kw">hiding</span> (parseTest)
+<span class="kw">import </span><span class="dt">Text.Parsec.Text</span>
+
+
+<span class="kw">import qualified</span> <span class="dt">Data.Text</span> <span class="kw">as</span> <span class="dt">T</span>
+<span class="kw">import qualified</span> <span class="dt">Data.HashMap.Strict</span> <span class="kw">as</span> <span class="dt">HM</span>
+
+<span class="kw">import qualified</span> <span class="dt">HTML.Parser</span> <span class="kw">as</span> <span class="dt">PR</span>
+<span class="kw">import qualified</span> <span class="dt">HTML.Parsec</span> <span class="kw">as</span> <span class="dt">PS</span>
+<span class="kw">import </span><span class="dt">Dom</span></code></pre>
+<p>We’ll be running the same tests for both the <code>ParserS</code> and <code>Parsec</code> html parsers, but after this we’re pretty much going to ignore the <code>ParserS</code> one, the <code>Parsec</code> parser will be much easier to extend if we want to add features.</p>
+<p>We’ll start with some simple data to test against:</p>
+<pre class="sourceCode haskell"><code class="sourceCode haskell">testText <span class="fu">=</span> text <span class="st">&quot;candygram&quot;</span>
+testElem <span class="fu">=</span> elem <span class="st">&quot;p&quot;</span> (HM.singleton <span class="st">&quot;ham&quot;</span> <span class="st">&quot;doctor&quot;</span>) [text <span class="st">&quot;sup&quot;</span>]
+
+<span class="co">-- a small test html page</span>
+<span class="co">-- yeah, multi-line strings in haskell kind of suck</span>
+html <span class="fu">=</span> <span class="st">&quot;&lt;html&gt;\n\</span>
+<span class="st">       \    &lt;head&gt;\n\</span>
+<span class="st">       \        &lt;title&gt;Test&lt;/title&gt;\n\</span>
+<span class="st">       \    &lt;/head&gt;\n\</span>
+<span class="st">       \    &lt;p class=\&quot;inner\&quot;&gt;\n\</span>
+<span class="st">       \        Hello, &lt;span id=\&quot;name\&quot;&gt;world!&lt;/span&gt;\n\</span>
+<span class="st">       \    &lt;/p&gt;\n\</span>
+<span class="st">       \    &lt;p class=\&quot;inner\&quot;&gt;\n\</span>
+<span class="st">       \        Goodbye!\n\</span>
+<span class="st">       \    &lt;/p&gt;\n\</span>
+<span class="st">       \&lt;/html&gt;&quot;</span>
+
+<span class="co">-- the expected result of parsing the test page</span>
+dom <span class="fu">=</span> elem <span class="st">&quot;html&quot;</span> HM.empty [head,p1,p2]
+  <span class="kw">where</span>
+    head  <span class="fu">=</span> elem <span class="st">&quot;head&quot;</span>  HM.empty [title]
+    title <span class="fu">=</span> elem <span class="st">&quot;title&quot;</span> HM.empty [text <span class="st">&quot;Test&quot;</span>]
+    p1    <span class="fu">=</span> elem <span class="st">&quot;p&quot;</span>    (HM.singleton <span class="st">&quot;class&quot;</span> <span class="st">&quot;inner&quot;</span>) [hello, span]
+    hello <span class="fu">=</span> text <span class="st">&quot;Hello, &quot;</span>
+    span  <span class="fu">=</span> elem <span class="st">&quot;span&quot;</span> (HM.singleton <span class="st">&quot;id&quot;</span> <span class="st">&quot;name&quot;</span>) [text <span class="st">&quot;world&quot;</span>]
+    p2    <span class="fu">=</span> elem <span class="st">&quot;p&quot;</span>    (HM.singleton <span class="st">&quot;class&quot;</span> <span class="st">&quot;inner&quot;</span>) [text <span class="st">&quot;Goodbye!&quot;</span>]</code></pre>
+<p>For each test, we want to check both that the parser succeeded, and that it returned the correct value, so we’ll define a little helper function for that:</p>
+<pre class="sourceCode haskell"><code class="sourceCode haskell"><span class="co">-- generic test: given an expected value and an actual value, check that the actual</span>
+<span class="co">-- value is not an error message, then compare it to the expected value</span>
+parseTest msg e <span class="fu">=</span> <span class="dt">TestCase</span> <span class="fu">.</span> either (assertFailure <span class="fu">.</span> show) (assertEqual msg e)</code></pre>
+<p>The first argument to <code>parseTest</code> is a message that will be associated with that test by the runner, if we don’t get a successful parse the runner will instead show the parser’s error message.</p>
+<p>The tests for <code>ParserS</code> and <code>Parsec</code> are identical aside from the function used to run the parser, and needing to pack the strings for <code>Parsec</code>:</p>
+<pre class="sourceCode haskell"><code class="sourceCode haskell"><span class="fu">---------------------------</span> <span class="dt">PARSER_S</span> <span class="dt">TESTS</span> <span class="fu">------------------------------</span>
+
+parsePR p i <span class="fu">=</span> PR.runParserS p (<span class="dt">PR.Parser</span> i)
+
+htmlPR <span class="fu">=</span> parseTest <span class="st">&quot;for valid html&quot;</span> dom <span class="fu">$</span> PR.parseHtml html
+
+
+textPR <span class="fu">=</span> parseTest <span class="st">&quot;for valid text&quot;</span> testText <span class="fu">$</span> parsePR PR.parseText <span class="st">&quot;candygram&quot;</span>
+
+
+elemPR <span class="fu">=</span> parseTest <span class="st">&quot;for valid elem&quot;</span> testElem <span class="fu">$</span>
+                   parsePR PR.parseElement <span class="st">&quot;&lt;p ham=\&quot;doctor\&quot;&gt;sup&lt;/p&gt;&quot;</span>
+
+
+<span class="fu">----------------------------</span> <span class="dt">PARSEC</span> <span class="dt">TESTS</span> <span class="fu">------------------------------</span>
+
+
+htmlPS <span class="fu">=</span> parseTest <span class="st">&quot;for valid html&quot;</span> dom <span class="fu">$</span> PS.parseHtml html
+
+
+textPS <span class="fu">=</span> parseTest <span class="st">&quot;for valid text&quot;</span> testText <span class="fu">$</span>
+                    parse PS.parseText <span class="st">&quot;&quot;</span> <span class="fu">$</span> T.pack <span class="st">&quot;candygram&quot;</span>
+
+
+elemPS <span class="fu">=</span> parseTest <span class="st">&quot;for valid elem&quot;</span> testElem <span class="fu">$</span>
+                    parse PS.parseElement <span class="st">&quot;&quot;</span> <span class="fu">$</span> T.pack <span class="st">&quot;&lt;p ham=\&quot;doctor\&quot;&gt;sup&lt;/p&gt;&quot;</span></code></pre>
+<p>Finally we’ll group the tests up, and run them:</p>
+<pre class="sourceCode haskell"><code class="sourceCode haskell">main <span class="fu">=</span> runTestTT tests
+
+tests <span class="fu">=</span> <span class="dt">TestList</span> [<span class="dt">TestLabel</span> <span class="st">&quot;ParserS html&quot;</span> htmlPR,
+                  <span class="dt">TestLabel</span> <span class="st">&quot;ParserS text&quot;</span> textPR,
+                  <span class="dt">TestLabel</span> <span class="st">&quot;ParserS elem&quot;</span> elemPR,
+                  <span class="dt">TestLabel</span> <span class="st">&quot;Parsec html&quot;</span>  htmlPS,
+                  <span class="dt">TestLabel</span> <span class="st">&quot;Parsec text&quot;</span>  textPS,
+                  <span class="dt">TestLabel</span> <span class="st">&quot;Parsec elem&quot;</span>  elemPS]</code></pre>
+<p>You can run these tests in GHCi with the command <code>runTestTT tests</code> (or just compile tests.hs outright) but if you’re being responsible and using a .cabal file + sandbox like I am, you might want to add a test suite to the .cabal file.</p>
+<pre><code>Test-Suite hunit-tests
+  type:             exitcode-stdio-1.0
+  main-is:          tests.hs
+  other-modules:    Dom,
+                    HTML.Parser,
+                    HTML.Parsec
+  build-depends:    base &gt;= 4.7 &amp;&amp; &lt; 5,
+                    unordered-containers &gt;=0.2 &amp;&amp; &lt;0.3,
+                    mtl &gt;= 2.2.1,
+                    text &gt;= 1.1.0.0,
+                    HUnit &gt;= 1.2.5.0,
+                    parsec == 3.1.*
+  hs-source-dirs:   tests,
+                    src
+  default-language: Haskell2010</code></pre>
+<p>You can now compile your tests with</p>
+<pre><code>cabal configure --enable-tests
+cabal build
+cabal test</code></pre>
+<p>However, HUnit does not actually conform to the format expected by <code>exitcode-stdio-1.0</code> (which is amusing, since it’s supposed to be a backwards compatibility setting) so <code>cabal test</code> will <em>always</em> claim to have run all tests successfully. The real results will be printed to the logfile located in dist/test.</p>
+<pre><code>Test suite hunit-tests: RUNNING...
+
+Cases: 6  Tried: 0  Errors: 0  Failures: 0
+                                          
+### Failure in: 0:ParserS html
+
+for valid html
+
+expected: NTree (Element (ElementData &quot;html&quot; fromList [])) [NTree (Element (ElementData &quot;head&quot; fromList [])) [NTree (Element (ElementData &quot;title&quot; fromList [])) [NTree (Text &quot;Test&quot;) []]],NTree (Element (ElementData &quot;p&quot; fromList [(&quot;class&quot;,&quot;inner&quot;)])) [NTree (Text &quot;Hello, &quot;) [],NTree (Element (ElementData &quot;span&quot; fromList [(&quot;id&quot;,&quot;name&quot;)])) [NTree (Text &quot;world&quot;) []]],NTree (Element (ElementData &quot;p&quot; fromList [(&quot;class&quot;,&quot;inner&quot;)])) [NTree (Text &quot;Goodbye!&quot;) []]]
+
+ but got: NTree (Element (ElementData &quot;html&quot; fromList [])) [NTree (Text &quot;\n    &quot;) [],NTree (Element (ElementData &quot;head&quot; fromList [])) [NTree (Text &quot;\n        &quot;) [],NTree (Element (ElementData &quot;title&quot; fromList [])) [NTree (Text &quot;Test&quot;) []],NTree (Text &quot;\n    &quot;) []],NTree (Text &quot;\n    &quot;) [],NTree (Element (ElementData &quot;p&quot; fromList [(&quot;class&quot;,&quot;inner&quot;)])) [NTree (Text &quot;\n        Hello, &quot;) [],NTree (Element (ElementData &quot;span&quot; fromList [(&quot;id&quot;,&quot;name&quot;)])) [NTree (Text &quot;world!&quot;) []],NTree (Text &quot;\n    &quot;) []],NTree (Text &quot;\n    &quot;) [],NTree (Element (ElementData &quot;p&quot; fromList [(&quot;class&quot;,&quot;inner&quot;)])) [NTree (Text &quot;\n        Goodbye!\n    &quot;) []],NTree (Text &quot;\n&quot;) []]
+
+
+Cases: 6  Tried: 1  Errors: 0  Failures: 1
+Cases: 6  Tried: 2  Errors: 0  Failures: 1
+Cases: 6  Tried: 3  Errors: 0  Failures: 1
+                                          
+### Failure in: 3:Parsec html
+
+for valid html
+
+expected: NTree (Element (ElementData &quot;html&quot; fromList [])) [NTree (Element (ElementData &quot;head&quot; fromList [])) [NTree (Element (ElementData &quot;title&quot; fromList [])) [NTree (Text &quot;Test&quot;) []]],NTree (Element (ElementData &quot;p&quot; fromList [(&quot;class&quot;,&quot;inner&quot;)])) [NTree (Text &quot;Hello, &quot;) [],NTree (Element (ElementData &quot;span&quot; fromList [(&quot;id&quot;,&quot;name&quot;)])) [NTree (Text &quot;world&quot;) []]],NTree (Element (ElementData &quot;p&quot; fromList [(&quot;class&quot;,&quot;inner&quot;)])) [NTree (Text &quot;Goodbye!&quot;) []]]
+
+ but got: NTree (Element (ElementData &quot;html&quot; fromList [])) [NTree (Element (ElementData &quot;head&quot; fromList [])) [NTree (Element (ElementData &quot;title&quot; fromList [])) [NTree (Text &quot;Test&quot;) []]],NTree (Element (ElementData &quot;p&quot; fromList [(&quot;class&quot;,&quot;inner&quot;)])) [NTree (Text &quot;Hello, &quot;) [],NTree (Element (ElementData &quot;span&quot; fromList [(&quot;id&quot;,&quot;name&quot;)])) [NTree (Text &quot;world!&quot;) []]],NTree (Element (ElementData &quot;p&quot; fromList [(&quot;class&quot;,&quot;inner&quot;)])) [NTree (Text &quot;Goodbye!\n    &quot;) []]]
+
+
+Cases: 6  Tried: 4  Errors: 0  Failures: 2
+Cases: 6  Tried: 5  Errors: 0  Failures: 2
+                                          
+Cases: 6  Tried: 6  Errors: 0  Failures: 2
+
+Test suite hunit-tests: PASS
+Test suite logged to: dist\test\hubert-0.1.0.0-hunit-tests.log</code></pre>
+<p>Oh hey, looks like our tests have found a problem: <code>parseHtml</code> has failed for both parsers. Since our other tests have succeeded, we can guess that the issue is at the top level of the parser, and inspecting the output, we can see that indeed, the <code>ParserS</code> is parsing whitespace between nodes as text nodes. That should be easy to fix. Since <code>consumeWhitespace = consumeWhile (==' ')</code> is only consuming spaces, we’ll rewrite it as:</p>
+<pre class="sourceCode haskell"><code class="sourceCode haskell"><span class="ot">consumeWhitespace ::</span> <span class="dt">ParserS</span> <span class="dt">T.Text</span>
+consumeWhitespace <span class="fu">=</span> consumeWhile isSpace</code></pre>
+<p>While the <code>Parsec</code> parser is not having this problem, it actually will exhibit the same behavior for improper html files where there is no root node; because for reasons I can’t remember, <code>parseNodes</code> and <code>parseChildren</code> do different things. <code>parseChildren</code> is the proper implementation though, so we’ll just rename it to <code>parseNodes</code> and change every call to <code>parseChildren</code> to call <code>parseNodes</code>.</p>
+<p>We have a second issue, which is affecting both parsers: the parser is returning a text element of <code>&quot;Goodbye!\n    &quot;</code> instead of the expected <code>&quot;Goodbye!&quot;</code>. This is actually a mistake writing the test, the correct behavior is for the html parser to include the whitespace in the text element, and later algorithms can ignore it or not as they wish. I’ve also accidentally left off the ‘!’ at the end of <code>&quot;world&quot;</code>.</p>
+<p>With those changes, all tests now pass:</p>
+<pre><code>Test suite hunit-tests: RUNNING...
+
+Cases: 6  Tried: 0  Errors: 0  Failures: 0
+Cases: 6  Tried: 1  Errors: 0  Failures: 0
+Cases: 6  Tried: 2  Errors: 0  Failures: 0
+Cases: 6  Tried: 3  Errors: 0  Failures: 0
+Cases: 6  Tried: 4  Errors: 0  Failures: 0
+Cases: 6  Tried: 5  Errors: 0  Failures: 0
+                                          
+Cases: 6  Tried: 6  Errors: 0  Failures: 0
+
+Test suite hunit-tests: PASS
+Test suite logged to: dist\test\hubert-0.1.0.0-hunit-tests.log</code></pre>
+<p>With that, we can move on to parsing CSS. I had originally planned to cover CSS in this post, but I’d like to avoid huge posts like the previous one so we’ll end this here. Expect the next post fairly soon.</p>
+<p>As usual, you can find the source for this post <a href="https://github.com/Hrothen/Hubert/blob/master/tests/tests.hs">here</a> and the source for Robinson <a href="https://github.com/mbrubeck/robinson">here</a>.</p>
+    
+    <nav id="postNav">
+        
+            <a href="/posts/lets-build-a-browser-engine-in-haskell-part-3.html" style="float:left;">Previous post</a>
+        
+        
+            <a href="/posts/lets-build-a-browser-engine-in-haskell-part-2.html" style="float:right; text-align: right;">Next post</a>
+        
+    </nav>
+</article>]]></summary>
+</entry>
+<entry>
+    <title>Let's Build a Browser Engine in Haskell: Part 2</title>
+    <link href="http://hrothen.github.com/posts/lets-build-a-browser-engine-in-haskell-part-2.html" />
+    <id>http://hrothen.github.com/posts/lets-build-a-browser-engine-in-haskell-part-2.html</id>
+    <published>2014-09-08T00:00:00Z</published>
+    <updated>2014-09-08T00:00:00Z</updated>
+    <summary type="html"><![CDATA[<article>
+    <div class="info">
+        Posted on September  8, 2014
+        
+    </div>
+    
+    <p>Ok, so in <a href="lets-build-a-browser-engine-in-haskell.html">part 1</a> we built a set of types to use for a really basic DOM. In part 2, we’ll write a simple html parser (actually we’ll write two) that only supports Balanced Tags, Attributes with quoted values, and Text nodes.</p>
+<h1 id="why-two-parsers">Why two parsers?</h1>
+<p>First, we’re going to write a straight port of Matt’s Rust parser, pretty much just to see how it goes. Then we’re gonna turn around write a more Haskell flavored parser, since writing parsers is something we can do really really well in Haskell. In this way we explore the similarities and differences between languages, as well as the design process that led to today’s modern applicative parsing libraries.</p>
+<p>Ok no that’s not true, I wrote the whole first parser at two in the morning before I remembered that Parsec is part of the Haskell Platform, so now you get to experience it too (to be fair, it’s a pretty decent example of using monad transformers, I feel).</p>
+<h1 id="parser-1-port-from-rust">Parser 1: port from Rust</h1>
+<p>First things first, we’re switching from using <code>String</code>s, which are just lists of <code>Char</code>s to <code>Text</code>s which are 1) designed to deal with all the different utf formats and 2) way faster. A nice side effect of this is that we can treat everything like regular <code>Char</code>s and the compiler will figure it out for us. If you’re following along, go back and update your types in Dom.hs.</p>
+<p>First we’ll create a Parser type, in Robinson the Parser consists of a vector and an index, but for our purposes it’ll be better to consume the <code>Text</code> as we read it. We don’t have to worry about accidentally destroying it, and in theory the compiler should fuse everything together into a single traversal.</p>
+<pre class="sourceCode haskell"><code class="sourceCode haskell"><span class="co">-- here&#39;s all the imports for the file</span>
+<span class="ot">{-# LANGUAGE OverloadedStrings #-}</span> <span class="co">-- this lets the compiler turn string literals into Texts</span>
+
+<span class="kw">import </span><span class="dt">Data.Char</span> (isAlphaNum)
+<span class="kw">import </span><span class="dt">Control.Monad</span> (liftM)
+
+<span class="kw">import </span><span class="dt">Control.Monad.State.Lazy</span> (<span class="dt">StateT</span>(..), evalState, get, put)
+<span class="kw">import </span><span class="dt">Control.Monad.Except</span> (<span class="dt">ExceptT</span>(..), runExceptT, throwError)
+<span class="kw">import </span><span class="dt">Control.Monad.Identity</span>
+
+<span class="kw">import qualified</span> <span class="dt">Data.HashMap.Strict</span> <span class="kw">as</span> <span class="dt">HM</span>
+<span class="kw">import qualified</span> <span class="dt">Data.Text</span> <span class="kw">as</span> <span class="dt">T</span>
+
+<span class="kw">import </span><span class="dt">Dom</span>
+
+
+<span class="kw">data</span> <span class="dt">Parser</span> <span class="fu">=</span> <span class="dt">Parser</span> <span class="dt">T.Text</span>
+
+<span class="kw">type</span> <span class="dt">ParserS</span> <span class="fu">=</span> <span class="dt">ExceptT</span> <span class="dt">T.Text</span> (<span class="dt">StateT</span> <span class="dt">Parser</span> <span class="dt">Identity</span>)</code></pre>
+<p>We’ve defined a <code>Parser</code> as just a wrapper around a <code>Text</code>, and a <code>ParserS</code> monad transformer stack where all our parsing code will live. If you’re not familiar with monad transformers you should go read <a href="http://www.grabmueller.de/martin/www/pub/Transformers.pdf">Monad Transformers Step by Step</a> which, despite being a .pdf file, is actually a short introductory tutorial. To read this post though, all you need to know is that <code>ParserS</code> basically functions as a <code>State a</code> and an <code>Either T.Text a</code> at the same time, so we can carry our <code>Parser</code> along and also toss up an error if something goes wrong.</p>
+<p>We’ll also define a few convenience functions for working with the <code>Parser</code>.</p>
+<pre class="sourceCode haskell"><code class="sourceCode haskell">runParserS p s <span class="fu">=</span> evalState (runExceptT p) s
+
+<span class="ot">nextchr ::</span> <span class="dt">Parser</span> <span class="ot">-&gt;</span> <span class="dt">Char</span>
+nextchr (<span class="dt">Parser</span> s) <span class="fu">=</span> T.head s <span class="co">-- errors if called when string is empty</span>
+
+<span class="ot">startsWith ::</span> <span class="dt">Parser</span> <span class="ot">-&gt;</span> <span class="dt">T.Text</span> <span class="ot">-&gt;</span> <span class="dt">Bool</span>
+startsWith (<span class="dt">Parser</span> input) s <span class="fu">=</span> s <span class="ot">`T.isPrefixOf`</span> input
+
+<span class="ot">eof ::</span> <span class="dt">Parser</span> <span class="ot">-&gt;</span> <span class="dt">Bool</span>
+eof (<span class="dt">Parser</span> input) <span class="fu">=</span> T.null input</code></pre>
+<p><code>runParserS</code> extracts our results from the monad transformer stack, the other three functions are just the same as the equivalent Rust versions, except that we’re always looking at the head of our <code>Text</code>.</p>
+<p>The worker functions</p>
+<pre class="sourceCode haskell"><code class="sourceCode haskell"><span class="ot">consumeChar ::</span> <span class="dt">ParserS</span> <span class="dt">Char</span>
+consumeChar <span class="fu">=</span> <span class="kw">do</span>
+    (<span class="dt">Parser</span> inp) <span class="ot">&lt;-</span> get
+    <span class="kw">case</span> T.uncons inp <span class="kw">of</span>
+      <span class="dt">Nothing</span> <span class="ot">-&gt;</span> throwError <span class="st">&quot;ERROR: unexpectedly reached end of file&quot;</span>
+      <span class="dt">Just</span> (c,inp&#39;) <span class="ot">-&gt;</span> <span class="kw">do</span>
+        put (<span class="dt">Parser</span> inp&#39;)
+        return c
+
+<span class="ot">consumeWhile ::</span> (<span class="dt">Char</span> <span class="ot">-&gt;</span> <span class="dt">Bool</span>) <span class="ot">-&gt;</span> <span class="dt">ParserS</span> <span class="dt">T.Text</span>
+consumeWhile f <span class="fu">=</span> <span class="kw">do</span>
+    <span class="dt">Parser</span> input <span class="ot">&lt;-</span> get
+    <span class="kw">let</span> (s,input&#39;) <span class="fu">=</span> T.span f input
+    put <span class="fu">$</span> <span class="dt">Parser</span> input&#39;
+    return s
+
+<span class="ot">consumeWhitespace ::</span> <span class="dt">ParserS</span> <span class="dt">T.Text</span>
+consumeWhitespace <span class="fu">=</span> consumeWhile (<span class="fu">==</span><span class="ch">&#39; &#39;</span>)</code></pre>
+<p><code>get</code> and <code>put</code> access the <code>ParserS</code>’s state, and <code>throwError</code> will short circuit the computation with a <code>Left</code> value. We lose a bit over Rust here in needing to explicitly handle trying to read an empty <code>Text</code> where Rust would have simply tossed up an error. Speaking of errors, Robinson doesn’t really have any error handling here, but it <em>is</em> liberally sprinkled with <code>assert!</code>s which, unlike every other language I’ve seen that has them, also run in non-debug code (apparently this is being changed soon). It’s convenient to define our own equivalent, which we’ll call <code>assert</code> as well.</p>
+<pre class="sourceCode haskell"><code class="sourceCode haskell"><span class="ot">assert ::</span> <span class="dt">T.Text</span> <span class="ot">-&gt;</span> <span class="dt">Bool</span> <span class="ot">-&gt;</span> <span class="dt">ParserS</span> ()
+assert s b <span class="fu">=</span> <span class="kw">if</span> b <span class="kw">then</span> return () <span class="kw">else</span> throwError s</code></pre>
+<p>Now we can nicely write checks on one line.</p>
+<p>We gain a lot of brevity for short functions:</p>
+<pre class="sourceCode haskell"><code class="sourceCode haskell"><span class="ot">parseTagName ::</span> <span class="dt">ParserS</span> <span class="dt">T.Text</span>
+parseTagName <span class="fu">=</span> consumeWhile isAlphaNum
+
+
+<span class="ot">parseNode ::</span> <span class="dt">ParserS</span> <span class="dt">Node</span>
+parseNode <span class="fu">=</span> <span class="kw">do</span>
+    p <span class="ot">&lt;-</span> get
+    <span class="kw">if</span> nextchr p <span class="fu">==</span> <span class="ch">&#39;&lt;&#39;</span> <span class="kw">then</span> parseElement <span class="kw">else</span> parseText
+
+<span class="ot">parseText ::</span> <span class="dt">ParserS</span> <span class="dt">Node</span>
+parseText <span class="fu">=</span> liftM Dom.text <span class="fu">$</span> consumeWhile (<span class="fu">/=</span><span class="ch">&#39;&lt;&#39;</span>)</code></pre>
+<p>Longer functions look fairly similar to their Rust counterparts, albeit a little easier on the eyes. I’m not totally happy with how the asserts look, but it’s not incredibly hard to follow the flow of the function.</p>
+<pre class="sourceCode haskell"><code class="sourceCode haskell"><span class="ot">parseElement ::</span> <span class="dt">ParserS</span> <span class="dt">Node</span>
+parseElement <span class="fu">=</span> <span class="kw">do</span>
+    <span class="co">-- open tag</span>
+    consumeChar <span class="fu">&gt;&gt;=</span> assert <span class="st">&quot;missing &lt; in open tag&quot;</span> <span class="fu">.</span> (<span class="fu">==</span><span class="ch">&#39;&lt;&#39;</span>)
+    tag <span class="ot">&lt;-</span> parseTagName
+    attrs <span class="ot">&lt;-</span> parseAttributes
+    consumeChar <span class="fu">&gt;&gt;=</span> assert <span class="st">&quot;missing &gt; in open tag&quot;</span> <span class="fu">.</span> (<span class="fu">==</span><span class="ch">&#39;&gt;&#39;</span>)
+    <span class="co">-- contents</span>
+    children <span class="ot">&lt;-</span> parseNodes
+    <span class="co">--end tag</span>
+    consumeChar  <span class="fu">&gt;&gt;=</span> assert <span class="st">&quot;missing &lt; in close tag&quot;</span> <span class="fu">.</span> (<span class="fu">==</span><span class="ch">&#39;&lt;&#39;</span>)
+    consumeChar  <span class="fu">&gt;&gt;=</span> assert <span class="st">&quot;missing / in close tag&quot;</span> <span class="fu">.</span> (<span class="fu">==</span><span class="ch">&#39;/&#39;</span>)
+    parseTagName <span class="fu">&gt;&gt;=</span> assert <span class="st">&quot;end tag doesn&#39;t match start tag&quot;</span> <span class="fu">.</span> (<span class="fu">==</span>tag)
+    consumeChar  <span class="fu">&gt;&gt;=</span> assert <span class="st">&quot;missing &gt; in close tag&quot;</span> <span class="fu">.</span> (<span class="fu">==</span><span class="ch">&#39;&gt;&#39;</span>)
+
+    return <span class="fu">$</span> Dom.elem tag attrs children
+
+
+<span class="ot">parseAttr ::</span> <span class="dt">ParserS</span> (<span class="dt">T.Text</span>, <span class="dt">T.Text</span>)
+parseAttr <span class="fu">=</span> <span class="kw">do</span>
+    name <span class="ot">&lt;-</span> parseTagName
+    consumeChar <span class="fu">&gt;&gt;=</span> assert <span class="st">&quot;missing =&quot;</span> <span class="fu">.</span> (<span class="fu">==</span><span class="ch">&#39;=&#39;</span>)
+    value <span class="ot">&lt;-</span> parseAttrValue
+    return (name,value)
+
+<span class="ot">parseAttrValue ::</span> <span class="dt">ParserS</span> <span class="dt">T.Text</span>
+parseAttrValue <span class="fu">=</span> <span class="kw">do</span>
+    open <span class="ot">&lt;-</span> consumeChar
+    assert <span class="st">&quot;invalid open&quot;</span> (open <span class="fu">==</span> <span class="ch">&#39;\&quot;&#39;</span> <span class="fu">||</span> open <span class="fu">==</span> <span class="ch">&#39;\&#39;&#39;</span>)
+    val <span class="ot">&lt;-</span> consumeWhile (<span class="fu">/=</span>open)
+    consumeChar <span class="fu">&gt;&gt;=</span> assert <span class="st">&quot;invalid close&quot;</span> <span class="fu">.</span> (<span class="fu">==</span>open)
+    return val
+
+<span class="ot">parseAttributes ::</span> <span class="dt">ParserS</span> <span class="dt">AttrMap</span>
+parseAttributes <span class="fu">=</span> parseAttributes&#39; HM.empty
+  <span class="kw">where</span>
+    parseAttributes&#39; attrs <span class="fu">=</span> <span class="kw">do</span>
+        consumeWhitespace
+        p <span class="ot">&lt;-</span> get
+        <span class="kw">if</span> nextchr p <span class="fu">==</span> <span class="ch">&#39;&gt;&#39;</span> <span class="kw">then</span> return attrs
+        <span class="kw">else</span> <span class="kw">do</span>
+            (name,val) <span class="ot">&lt;-</span> parseAttr
+            parseAttributes&#39; <span class="fu">$</span> HM.insert name val attrs
+
+
+<span class="ot">parseNodes ::</span> <span class="dt">ParserS</span> [<span class="dt">Node</span>]
+parseNodes <span class="fu">=</span> parseNodes&#39; []
+  <span class="kw">where</span>
+    parseNodes&#39; nodes <span class="fu">=</span> <span class="kw">do</span>
+        consumeWhitespace
+        p <span class="ot">&lt;-</span> get
+        <span class="kw">if</span> eof p <span class="fu">||</span> p <span class="ot">`startsWith`</span> <span class="st">&quot;&lt;/&quot;</span>
+        <span class="kw">then</span> return nodes
+        <span class="kw">else</span> parseNode <span class="fu">&gt;&gt;=</span> parseNodes&#39; <span class="fu">.</span> (nodes<span class="fu">++</span>) <span class="fu">.</span> (<span class="fu">:</span>[])  <span class="co">--slow for big DOM</span></code></pre>
+<p>Finally, we’ll write the function that actually parses an HTML string.</p>
+<pre class="sourceCode haskell"><code class="sourceCode haskell"><span class="ot">parseHtml ::</span> <span class="dt">T.Text</span> <span class="ot">-&gt;</span> <span class="dt">Either</span> <span class="dt">T.Text</span> <span class="dt">Node</span>
+parseHtml s <span class="fu">=</span> <span class="kw">case</span> runParserS parseNodes (<span class="dt">Parser</span> s) <span class="kw">of</span>
+              <span class="dt">Left</span> err <span class="ot">-&gt;</span> <span class="dt">Left</span> err
+              <span class="dt">Right</span> nodes <span class="ot">-&gt;</span> <span class="dt">Right</span> <span class="fu">$</span>
+                <span class="kw">if</span> length nodes <span class="fu">==</span> <span class="dv">1</span>
+                <span class="kw">then</span> head nodes
+                <span class="kw">else</span> Dom.elem <span class="st">&quot;html&quot;</span> HM.empty nodes</code></pre>
+<p>So, that’s the whole parser in only about 135 lines of code, which isn’t bad. Of course, this implementation is fragile, overly verbose, and I suspect that the wrapper types might prevent proper stream fusion on the <code>Text</code> functions (I’m not super familiar with the details of Haskell stream fusion).</p>
+<h1 id="part-2-the-combinator-parser">Part 2: The Combinator Parser</h1>
+<p>Fortunately we have the <a href="http://hackage.haskell.org/package/parsec-3.1.5">Parsec</a> library, which will allow us to write a much nicer parser in about half the space (and yes I know, brevity tends to lead to the unreadable gibberish Haskell is famous for, but truest me). Parsec is not the fastest parser library, (that would be <a href="http://hackage.haskell.org/package/attoparsec">attoparsec</a>, because if there is one thing all programmers love, it is puns) but it is the most robust, and it’s really easy to use. Most importantly, attoparsec produces truly confusing error messages, whereas Parsec will actually allow us to add our own if we want (though today I won’t).</p>
+<p>Our imports list is slightly shorter:</p>
+<pre class="sourceCode haskell"><code class="sourceCode haskell"><span class="ot">{-# LANGUAGE OverloadedStrings, NoMonomorphismRestriction #-}</span>
+<span class="kw">module</span> <span class="dt">HTML.Parsec</span>
+    ( parseHtml
+    ) <span class="kw">where</span>
+
+<span class="kw">import </span><span class="dt">Control.Monad</span> (liftM)
+
+<span class="kw">import qualified</span> <span class="dt">Data.Text</span> <span class="kw">as</span> <span class="dt">T</span>
+<span class="kw">import </span><span class="dt">Text.Parsec</span>
+<span class="kw">import </span><span class="dt">Text.Parsec.Text</span>
+
+<span class="kw">import qualified</span> <span class="dt">Data.HashMap.Strict</span> <span class="kw">as</span> <span class="dt">HM</span>
+
+<span class="kw">import </span><span class="dt">Dom</span></code></pre>
+<p>And our top level function is all but identical:</p>
+<pre class="sourceCode haskell"><code class="sourceCode haskell"><span class="ot">parseHtml ::</span> <span class="dt">T.Text</span> <span class="ot">-&gt;</span> <span class="dt">Either</span> <span class="dt">ParseError</span> <span class="dt">Node</span>
+parseHtml s <span class="fu">=</span> <span class="kw">case</span> parse parseNodes <span class="st">&quot;&quot;</span> s <span class="kw">of</span>
+              <span class="dt">Left</span> err <span class="ot">-&gt;</span> <span class="dt">Left</span> err
+              <span class="dt">Right</span> nodes <span class="ot">-&gt;</span> <span class="dt">Right</span> <span class="fu">$</span>
+                <span class="kw">if</span> length nodes <span class="fu">==</span> <span class="dv">1</span>
+                <span class="kw">then</span> head nodes
+                <span class="kw">else</span> Dom.elem <span class="st">&quot;html&quot;</span> HM.empty nodes</code></pre>
+<p>The only difference here is our call to <code>parse</code> instead of <code>runParserS</code>. The underlying monad in Parsec is actually pretty much the same as our <code>ParserS</code> but with a bit more. It’s also a monad transformer, so although we’re not going to use it today, we could add even more monadic features if we needed to.</p>
+<p>When working with Parsec it’s convenient to build the parser from the top down, our first function is simple enough:</p>
+<pre class="sourceCode haskell"><code class="sourceCode haskell">parseNodes <span class="fu">=</span> manyTill parseNode eof</code></pre>
+<p>That’ll just keep parsing Nodes until the parser fails or we hit the end of the file.</p>
+<p><code>parseNode</code> is easy too, just parse a <code>Text</code> or an <code>Element</code>:</p>
+<pre class="sourceCode haskell"><code class="sourceCode haskell">parseNode <span class="fu">=</span> parseElement <span class="fu">&lt;|&gt;</span> parseText</code></pre>
+<p>How do we parse a <code>Text</code>? Just keep taking characters until we hit a ‘&lt;’</p>
+<pre class="sourceCode haskell"><code class="sourceCode haskell">parseText <span class="fu">=</span> liftM (Dom.text <span class="fu">.</span> T.pack) <span class="fu">$</span> many (noneOf <span class="st">&quot;&lt;&quot;</span>)</code></pre>
+<p>What about an <code>Element</code>? That’s a bit longer, but still pretty readable.</p>
+<pre class="sourceCode haskell"><code class="sourceCode haskell">parseElement <span class="fu">=</span> <span class="kw">do</span>
+    <span class="co">-- opening tag</span>
+    (tag, attrs) <span class="ot">&lt;-</span> between (char <span class="ch">&#39;&lt;&#39;</span>) (char <span class="ch">&#39;&gt;&#39;</span>) tagData
+    <span class="co">-- contents</span>
+    children <span class="ot">&lt;-</span> parseChildren
+    <span class="co">-- closing tag</span>
+    string <span class="fu">$</span> tag <span class="fu">++</span> <span class="st">&quot;&gt;&quot;</span> <span class="co">-- &quot;&lt;/&quot; is consumed by parseChildren, maybe bad form?</span>
+    return <span class="fu">$</span> Dom.elem (T.pack tag) attrs children
+
+
+<span class="co">-- the try combinator won&#39;t consume input if it fails, so the next parser will get that input</span>
+<span class="co">-- otherwise if string &quot;&lt;/&quot; matched &#39;&lt;&#39; but not &#39;/&#39; the next parser would start at &#39;/&#39;</span>
+
+parseChildren <span class="fu">=</span> spaces <span class="fu">&gt;&gt;</span> manyTill parseChild end
+  <span class="kw">where</span>
+    end <span class="fu">=</span> eof <span class="fu">&lt;|&gt;</span> (try (string <span class="st">&quot;&lt;/&quot;</span>) <span class="fu">&gt;&gt;</span> return ())
+
+    parseChild <span class="fu">=</span> spacesAfter parseNode
+
+
+tagData <span class="fu">=</span> <span class="kw">do</span>
+    t <span class="ot">&lt;-</span> tagName
+    attrs <span class="ot">&lt;-</span> attributes
+    return (t,attrs)
+
+tagName <span class="fu">=</span> many1 alphaNum
+
+<span class="co">--this is safe because attribute will fail without consuming on &#39;&gt;&#39;&#39;</span>
+attributes <span class="fu">=</span> liftM HM.fromList <span class="fu">$</span> spaces <span class="fu">&gt;&gt;</span> many (spacesAfter attribute)
+
+attribute <span class="fu">=</span> <span class="kw">do</span>
+    name <span class="ot">&lt;-</span> tagName
+    char <span class="ch">&#39;=&#39;</span>
+    open <span class="ot">&lt;-</span> char <span class="ch">&#39;\&quot;&#39;</span> <span class="fu">&lt;|&gt;</span> char <span class="ch">&#39;\&#39;&#39;</span>
+    value <span class="ot">&lt;-</span> manyTill anyChar (try <span class="fu">$</span> char open)
+    return (T.pack name, T.pack value)
+
+
+<span class="co">-- run parser p and then strip the trailing spaces, returning the result of p.</span>
+spacesAfter p <span class="fu">=</span> p <span class="fu">&lt;*</span> spaces</code></pre>
+<p>That’s the whole thing.</p>
+<p>One thing I like about Parsec is that it’s very easy to write short functions with readable names, and then compose them into larger parsers that are still really easy to read. Moving forward, I’m just going to use Parsec for any other parsing in this project, without messing around with the <code>ParserS</code> (I’ve left it in the repo though).</p>
+<p>That’s all for today, I was planning to write the CSS parser next time, but now I’m thinking I might take a break and set up a test framework first. We’ll see where that goes.</p>
+<p>The source for this post is <a href="https://github.com/Hrothen/Hubert/tree/master/src/Html">here</a>. As per usual, the source for Robinson is <a href="https://github.com/mbrubeck/robinson">here</a>.</p>
+    
+    <nav id="postNav">
+        
+            <a href="/posts/lets-build-a-browser-engine-in-haskell-setting-up-tests.html" style="float:left;">Previous post</a>
+        
+        
+            <a href="/posts/lets-build-a-browser-engine-in-haskell.html" style="float:right; text-align: right;">Next post</a>
+        
+    </nav>
+</article>]]></summary>
+</entry>
+<entry>
+    <title>Let's Build a Browser Engine in Haskell</title>
+    <link href="http://hrothen.github.com/posts/lets-build-a-browser-engine-in-haskell.html" />
+    <id>http://hrothen.github.com/posts/lets-build-a-browser-engine-in-haskell.html</id>
+    <published>2014-09-05T00:00:00Z</published>
+    <updated>2014-09-05T00:00:00Z</updated>
+    <summary type="html"><![CDATA[<article>
+    <div class="info">
+        Posted on September  5, 2014
+        
+    </div>
+    
+    <p>Matt Brubeck over at Mozilla has recently started a series of <a href="http://limpet.net/mbrubeck/2014/08/08/toy-layout-engine-1.html">blog posts</a> on constructing a toy html rendering engine in Rust. Now, I’m not particularly interested in Rust, but I <em>am</em> interested in web browsers, so I thought it might be fun to try following along in Haskell instead (obviously, I could also use an imperative language like C++, but that would be less interesting).</p>
+<h1 id="build-environment">Build Environment</h1>
+<p>Matt’s trying to stick to using only the Rust standard library, but for Haskell that would limit us unnecessarily; instead, I’ll try to stick with libraries shipped with the Haskell Platform (so no lenses, unless things get really awkward). I’ll use GHC 7.8, but the code will probably compile with 7.6.</p>
+<p>We’ll name the project Hubert because in Haskell we like to start or end program names with H.</p>
+<h1 id="getting-started-setting-up-the-dom">Getting Started: Setting up the DOM</h1>
+<p>A browser’s DOM is a tree of Nodes representing the structure of an HTML page. Robinson represents the DOM with an intrusive tree: each Node has a NodeType, and a <code>vec</code> of it’s own children. In Haskell, we generally like to separate structure and data when possible, so instead we’ll build a Tree and fill it with Nodes.</p>
+<p>First the tree type:</p>
+<pre class="sourceCode haskell"><code class="sourceCode haskell"><span class="kw">data</span> <span class="dt">NTree</span> a <span class="fu">=</span> <span class="dt">NTree</span> a [<span class="dt">NTree</span> a]
+  <span class="kw">deriving</span> (<span class="dt">Show</span>)</code></pre>
+<p>That was easy, next up are the Nodes. Matt uses a heavily pared down DOM, we’ll only have text and element nodes, which we represent with a sum type.</p>
+<pre class="sourceCode haskell"><code class="sourceCode haskell"><span class="kw">import qualified</span> <span class="dt">Data.Text</span> <span class="kw">as</span> <span class="dt">T</span>
+<span class="co">-- data specific to each node type</span>
+<span class="kw">data</span> <span class="dt">NodeType</span> <span class="fu">=</span> <span class="dt">Text</span> <span class="dt">T.Text</span>
+              <span class="fu">|</span> <span class="dt">Element</span> <span class="dt">ElementData</span>
+  <span class="kw">deriving</span> (<span class="dt">Show</span>)</code></pre>
+<p>Finally we’ll make a nice type alias for a Node:</p>
+<pre class="sourceCode haskell"><code class="sourceCode haskell"><span class="kw">type</span> <span class="dt">Node</span> <span class="fu">=</span> <span class="dt">NTree</span> <span class="dt">NodeType</span></code></pre>
+<p>All that’s left to do is define our node types. We already have a full definition for <code>Text</code>, it just holds a <code>Text</code>, <code>Element</code> holds an <code>ElementData</code> however, which consists of a name, and a hashmap of attributes (which we’ll represent with Texts), imaginatively named <code>AttrMap</code>. Efficient maps can be annoying to write in Haskell, so we’ll import a HashMap from <code>unordered-containers</code>.</p>
+<pre class="sourceCode haskell"><code class="sourceCode haskell"><span class="kw">import qualified</span> <span class="dt">Data.HashMap.Strict</span> <span class="kw">as</span> <span class="dt">HM</span>
+
+<span class="kw">type</span> <span class="dt">AttrMap</span> <span class="fu">=</span> <span class="dt">HM.HashMap</span> <span class="dt">T.Text</span> <span class="dt">T.Text</span>
+
+<span class="kw">data</span> <span class="dt">ElementData</span> <span class="fu">=</span> <span class="dt">ElementData</span> <span class="dt">T.Text</span> <span class="dt">AttrMap</span>
+  <span class="kw">deriving</span> (<span class="dt">Show</span>)</code></pre>
+<p>Haskell manages to use a lot less space by not bothering to name fields in our types, the trade off is that we need to write the full constructor name out in our function declarations. If that gets too annoying we can switch to record fields later.</p>
+<p>Matt also provides constructor functions for a <code>Node</code> with each <code>NodeType</code>. We don’t strictly need these, but they’ll save us a lot of space so let’s write them.</p>
+<pre class="sourceCode haskell"><code class="sourceCode haskell"><span class="ot">text ::</span> <span class="dt">T.Text</span> <span class="ot">-&gt;</span> <span class="dt">Node</span>
+text <span class="fu">=</span> flip <span class="dt">NTree</span> [] <span class="fu">.</span> <span class="dt">Text</span>
+
+elem<span class="ot"> ::</span> <span class="dt">T.Text</span> <span class="ot">-&gt;</span> <span class="dt">AttrMap</span> <span class="ot">-&gt;</span> [<span class="dt">Node</span>] <span class="ot">-&gt;</span> <span class="dt">Node</span>
+elem name atts cs <span class="fu">=</span> <span class="dt">NTree</span> (<span class="dt">Element</span> (<span class="dt">ElementData</span> name atts)) cs</code></pre>
+<p>We’ll probably write some accessors later but this is enough to get started with. Next time, we’ll write the HTML parser, and actually build a DOM using these types.</p>
+<p>The full source for this article can be found <a href="https://github.com/Hrothen/Hubert/blob/master/src/Dom.hs">here</a>. The full source for Robinson can be found <a href="https://github.com/mbrubeck/robinson">here</a>.</p>
+    
+    <nav id="postNav">
+        
+            <a href="/posts/lets-build-a-browser-engine-in-haskell-part-2.html" style="float:left;">Previous post</a>
+        
+        
+            <a href="/posts/banner-sagafactions-multiplayer-rpgs-and-the-mechanics-of-speed.html" style="float:right; text-align: right;">Next post</a>
+        
+    </nav>
+</article>]]></summary>
+</entry>
+<entry>
+    <title>Banner Saga:Factions, multiplayer RPGs, and the mechanics of speed</title>
+    <link href="http://hrothen.github.com/posts/banner-sagafactions-multiplayer-rpgs-and-the-mechanics-of-speed.html" />
+    <id>http://hrothen.github.com/posts/banner-sagafactions-multiplayer-rpgs-and-the-mechanics-of-speed.html</id>
+    <published>2013-03-06T00:00:00Z</published>
+    <updated>2013-03-06T00:00:00Z</updated>
+    <summary type="html"><![CDATA[<article>
+    <div class="info">
+        Posted on March  6, 2013
+        
+    </div>
+    
+    <p>The folks over at Stoic released the free to play multiplayer component of their post-ragnarok tactical rpg epic <a href="http://stoicstudio.com/forum/the-banner-saga-factions.php">The Banner Saga</a> last week. I haven’t played a whole lot, for reasons I’ll get into in a bit, but I have played a few games and I’d like to talk about the game itself a bit before moving on to some perhaps more interesting musings on what it tells us about rpgs in the multiplayer space.</p>
+<h1 id="breakdown-the-game">Breakdown: The game</h1>
+<p>The Banner Saga is a tactical rpg in the vein of Tactics:Ogre, Final Fantasy Tactics, and Fire Emblem, although it plays very differently than those games. Combat takes place on a grid where units take turns moving and attacking, but unlike the aforementioned games BS does away with the classic Speed unit stat, instead players simply take turns moving units. This turns out to impact play in a big way. Set after the Ragnarok, you control a team of humans and Varl(which I assume to be related to giants in some way) with each race having access to certain classes. A unit is able to progress to an advanced class after defeating at least five enemies and spending 50 “Reknown”, which is earned by killing enemies, winning battles, and meeting certain goals. In addition to gaining an ability and improving their attributes, advanced classes can move some of their stats around, allowing the player to attempt to optimize their team for a particular play-style. The game and cut scenes are rendered in a beautiful hand-painted style.</p>
+<p>Units have two health stats: Armor, which reduces damage taken, and Strength, which acts both as a standard HP bar and as a gauge of the units ability to deal damage. Combat consists of balancing your ability to damage a unit and its capacity to deal damage to you in the short term. Your MP equivalent, “Willpower”, is used for increasing move distance and damage, as well as activating abilities. Willpower does not regenerate unless you spend a full turn resting (do not move or act) or expend a charge from your war-horn (which gains a charge every time you defeat an enemy unit). Units additionally have a stat, “Exertion”, that determines how many points of Willpower they can spend on any individual action.</p>
+<h1 id="breakdown-the-good">Breakdown: The good</h1>
+<p>The combat is tight and responsive – limiting each unit to a single ability helps both to prevent decision paralysis and to reason about your opponent’s actions. Animations and sound are well chosen and well synced, hitting an enemy unit feels <em>great</em>. Unit abilities are well thought out and varied. Forcing players to take turns is an interesting change to the standard formula.</p>
+<h1 id="breakdown-the-bad">Breakdown: the bad</h1>
+<p>Combat is <strong>SLOW</strong>, like really slow. By default each player has what feels like a full minute to make their move(I didn’t actually time this), and in the event of connectivity problems you tend to see each move after at least this much time. Of the games I played, the only one lasting less than half an hour was when my opponent forfeited. Forfeiting incidentally, is not recommended, fighting until the bitter end will net you some consolation Renown but if you forfeit you get nothing. It’s possible to reduce the timer to a slightly better thirty seconds, but Stoic have opted to call this “expert mode”, thereby guaranteeing that most players won’t try it before spending several hours playing the extremely slow default mode.</p>
+<p>The interface is not entirely intuitive, which is compounded by the fact that some features (such as the horn at the top of the screen, and miss chances) are not explained anywhere in the game except for the optional advanced tutorial video, which I doubt many people watch.</p>
+<p>It’s worth noting at this point that nearly all my gripes with the game are UI issues or multiplayer related, they are unlikely to detract from your enjoyment of the final single player product. I’d like to spend some time talking about the multiplayer issues though, because they highlight some issues with implementing a multiplayer tactical rpg, which is sort of a long-term goal of mine.</p>
+<h1 id="need-for-speed-rpg-edition">Need for Speed: rpg edition</h1>
+<p>The major lesson to learn from Banner Saga is how hard it is to make a tactical rpg play at anything resembling an acceptable speed in multiplayer matches. I complained a lot about the speed up above, but really Stoic have put an incredible amount of work into making combat as fast as possible. By restricting units to only a single active ability the player has only a small set of possible moves for each unit instead of needing to consider say, 5 damage dealing abilities and 7 status modifying abilities. They probably could have gotten away with dialing expert mode down to 20 second turns, but they’re obviously worried about limiting the ability of new players to get into the game. Having players take turns moving units, and showing the unit order, also improve flow by making it easier to reason about later turns.</p>
+<p>There’s a major problem with Stoic’s solution to the speed issue though, it severely limits their ability to add complexity to the game, and complexity is a pretty integral part of tactical rpgs. Players like their characters to feel stronger after 50 hours of play, which is usually achieved by granting access to newer more powerful abilities and classes. Furthermore, players generally like having many options on a turn; even though it slows gameplay down, it makes the player feel more involved in the battle.</p>
+<p>So, what are some other ways we could try to get a fast game without limiting complexity? The simplest method is to create a “normal” tactical rpg but restrict turns to some arbitrary time limit. This is not a good solution – without some streamlining factor the player simply has too many options to play quickly. A more nuanced approach would be to restrict players to a smaller set of abilities at any given turn, but allow them some way to change what abilities they will have in later turns. This can create issues with reasoning about future turns, as units become more mutable the player is less able to think ahead.</p>
+<h1 id="mutate-and-advance">Mutate and Advance</h1>
+<p>We could at this point try to find another solution, but the idea of mutating a unit’s abilities has caught my fancy, and I see a way to fix a second issue, namely that imposing a time limit on turns can make player “feel” rushed even when they are not. Instead of giving up on this solution let’s say that units have some small set of initial abilities, and then a number of tiers of more advanced abilities not initially available. Each tier has about the same number of abilities, some of which may be direct upgrades of earlier abilities while others may open up new options for the unit. Now, instead of punishing a player for taking too long on a turn, let’s reward them for acting quickly. Give each unit a stat, we’ll call it “momentum”, that starts at zero. Each time a unit performs an action it gains some momentum, and whenever a unit’s turn is active its momentum slowly decreases. At certain predetermined thresholds of momentum the unit replaces its available abilities with the next higher tier, and when the momentum drops back below a threshold the unit again must use the lower tier of abilities. In this way the player is rewarded for playing quickly, and with some tuning of the combat system we hope to push both players into a positive feedback loop whereby play becomes progressively faster as combat goes on. With this point we can introduce a certain amount of additional complexity over Banner Saga, if we’re careful, because gameplay should be moving too fast for players to be thinking very far ahead, and instead they should be focusing on more immediate payoffs.</p>
+<p>There are of course a number of problems with this idea. Loosing too much momentum in the middle of a match could easily see the player get caught unable to build it back up, but their opponent might not be able to take advantage of this, resulting in a match that drags on. Connection issues are even more of an issue here than they are with Banner Saga – a ten second pause could cripple a player – and there isn’t a great way for the game to let them recover. The additional complexity we seek to add also becomes an issue for the developer: complexity is a lot of work to manage in any case, but in this system the danger of players restricting themselves to very small subsets of the available choices(classes, abilities, equipment, etc…) becomes exacerbated, forcing additional testing.</p>
+<p>Still, it’s worth looking into.</p>
+    
+    <nav id="postNav">
+        
+            <a href="/posts/lets-build-a-browser-engine-in-haskell.html" style="float:left;">Previous post</a>
+        
+        
+            <a href="/posts/initial-post.html" style="float:right; text-align: right;">Next post</a>
+        
+    </nav>
+</article>]]></summary>
+</entry>
+<entry>
+    <title>Initial Post</title>
+    <link href="http://hrothen.github.com/posts/initial-post.html" />
+    <id>http://hrothen.github.com/posts/initial-post.html</id>
+    <published>2013-02-20T00:00:00Z</published>
+    <updated>2013-02-20T00:00:00Z</updated>
+    <summary type="html"><![CDATA[<article>
+    <div class="info">
+        Posted on February 20, 2013
+        
+    </div>
+    
+    <p>This is the reference implementation of the self referential post.</p>
+    
+    <nav id="postNav">
+        
+            <a href="/posts/banner-sagafactions-multiplayer-rpgs-and-the-mechanics-of-speed.html" style="float:left;">Previous post</a>
+        
+        
+    </nav>
+</article>]]></summary>
+</entry>
+
+</feed>

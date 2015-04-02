@@ -1,0 +1,353 @@
+<?xml version="1.0" encoding="UTF-8" ?>
+<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd">
+<html xmlns="http://www.w3.org/1999/xhtml" xml:lang="en" lang="en">
+    <head>
+        <meta http-equiv="Content-Type" content="text/html; charset=UTF-8" />
+        <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+        <title>Also Sprach Leif - Let's Build a Browser Engine in Haskell: part 6</title>
+        <link rel="stylesheet" type="text/css" href="../css/default.css" />
+    </head>
+    <body>
+        <header>
+            <div id="logo">
+                <a href="../">Also Sprach Leif</a>
+            </div>
+            <nav>
+                <a href="../">Home</a>
+                <a href="../about.html">About</a>
+                <a href="../archive.html">Archive</a>
+                <a href="../atom.xml">Feed</a>
+            </nav>
+            <div id="tagline">
+                Math, Programming, Games, and whatever else I feel like
+            </div>
+        </header>
+
+        <div id="content">
+            <h1>Let's Build a Browser Engine in Haskell: part 6</h1>
+
+            <article>
+    <div class="info">
+        Posted on November 19, 2014
+        
+    </div>
+    
+    <p>Welcome back, today we’re going to implement painting of the layout tree to an image (but not to a real window, yet). The actual painting code is fairly simple, but before that we’re going to want to backtrack and modify some older code.</p>
+<p>First we’ll add a <code>Foldable</code> instance to our <code>NTree</code> in Dom.hs.</p>
+<pre class="sourceCode haskell"><code class="sourceCode haskell"><span class="kw">import </span><span class="dt">Data.Monoid</span> ((&lt;&gt;))   <span class="co">-- (&lt;&gt;) is an infix version of mappend</span>
+<span class="kw">import </span><span class="dt">Data.Foldable</span>
+
+<span class="kw">instance</span> <span class="dt">Foldable</span> <span class="dt">NTree</span> <span class="kw">where</span>
+    foldMap f (<span class="dt">NTree</span> n []) <span class="fu">=</span> f n
+    foldMap f (<span class="dt">NTree</span> n ns) <span class="fu">=</span> f n <span class="fu">&lt;&gt;</span> foldMap (foldMap f) ns</code></pre>
+<p>This will let us easily convert the layout tree into an intermediate representation.</p>
+<p>Next we’ll refactor a couple data structures to match how Robinson is laying things out. We’ll pull the first four fields of the <code>Dimensions</code> struct out into their own <code>Rect</code> struct and write a couple helpers for it. We’ll also pull the color data out of the <code>Value</code> type, so that later we can add other representations if we want to. (If this next bit seems hard to follow, the <a href="https://github.com/Hrothen/Hubert/commits/master">changelog</a> has a full diff)</p>
+<pre class="sourceCode haskell"><code class="sourceCode haskell">
+<span class="fu">----------------------</span> Layout.hs <span class="fu">--------------------</span>
+
+<span class="kw">data</span> <span class="dt">Rect</span> <span class="fu">=</span> <span class="dt">Rect</span> {<span class="ot"> x      ::</span> <span class="dt">Float</span>
+                 ,<span class="ot"> y      ::</span> <span class="dt">Float</span>
+                 ,<span class="ot"> width  ::</span> <span class="dt">Float</span>
+                 ,<span class="ot"> height ::</span> <span class="dt">Float</span> }
+
+<span class="kw">data</span> <span class="dt">Dimensions</span> <span class="fu">=</span> <span class="dt">Dimensions</span> {<span class="ot"> content ::</span> <span class="dt">Rect</span>
+                             ,<span class="ot"> padding ::</span> <span class="dt">EdgeSize</span>
+                             ,<span class="ot"> border  ::</span> <span class="dt">EdgeSize</span>
+                             ,<span class="ot"> margin  ::</span> <span class="dt">EdgeSize</span> }
+
+emptyRect <span class="fu">=</span> <span class="dt">Rect</span> <span class="dv">0</span> <span class="dv">0</span> <span class="dv">0</span> <span class="dv">0</span>
+
+defaultDim <span class="fu">=</span> <span class="dt">Dimensions</span> emptyRect emptyEdge emptyEdge emptyEdge
+
+<span class="co">-- Rect and Dimensions helpers</span>
+
+<span class="ot">expandedBy ::</span> <span class="dt">EdgeSize</span> <span class="ot">-&gt;</span> <span class="dt">Rect</span> <span class="ot">-&gt;</span> <span class="dt">Rect</span>
+expandedBy edge rec <span class="fu">=</span> <span class="dt">Rect</span>{ x      <span class="fu">=</span> x rec <span class="fu">-</span> left edge
+                          , y      <span class="fu">=</span> y rec <span class="fu">-</span> top edge
+                          , width  <span class="fu">=</span> width rec <span class="fu">+</span> left edge <span class="fu">+</span> right edge
+                          , height <span class="fu">=</span> height rec <span class="fu">+</span> top edge <span class="fu">+</span> bottom edge }
+
+
+<span class="ot">paddingBox ::</span> <span class="dt">Dimensions</span> <span class="ot">-&gt;</span> <span class="dt">Rect</span>
+paddingBox d <span class="fu">=</span> expandedBy (padding d) <span class="fu">$</span> content d
+
+<span class="ot">marginBox ::</span> <span class="dt">Dimensions</span> <span class="ot">-&gt;</span> <span class="dt">Rect</span>
+marginBox d <span class="fu">=</span> expandedBy (margin d) <span class="fu">$</span> borderBox d
+
+<span class="ot">borderBox ::</span> <span class="dt">Dimensions</span> <span class="ot">-&gt;</span> <span class="dt">Rect</span>
+borderBox d <span class="fu">=</span> expandedBy (border d) <span class="fu">$</span> paddingBox d
+
+
+<span class="ot">layoutTree ::</span> <span class="dt">StyledNode</span> <span class="ot">-&gt;</span> <span class="dt">Dimensions</span> <span class="ot">-&gt;</span><span class="dt">Either</span> <span class="dt">T.Text</span> <span class="dt">LayoutBox</span>
+layoutTree root contBlock <span class="fu">=</span> buildLayoutTree root <span class="fu">&gt;&gt;=</span>
+                            flip layout contBlock{content <span class="fu">=</span> (content contBlock){height<span class="fu">=</span><span class="dv">0</span>}}
+
+
+<span class="co">-- updateDim in calcWidth</span>
+updateDim d <span class="fu">=</span> <span class="kw">let</span> pad <span class="fu">=</span> padding d
+                        mar <span class="fu">=</span> margin d
+                        bor <span class="fu">=</span> border d
+                        rec <span class="fu">=</span> content d
+                     <span class="kw">in</span> d{ content <span class="fu">=</span> rec{ width <span class="fu">=</span> w'' }
+                         , padding <span class="fu">=</span> pad{ left  <span class="fu">=</span> plf, right <span class="fu">=</span> prt }
+                         , border  <span class="fu">=</span> bor{ left  <span class="fu">=</span> blw, right <span class="fu">=</span> brw }
+                         , margin  <span class="fu">=</span> mar{ left  <span class="fu">=</span> ml,  right <span class="fu">=</span> mr } }
+
+
+<span class="co">-- updateDim in calcPosition</span>
+updateDim d [mt,mb,bt,bb,pt,pb] <span class="fu">=</span>
+          <span class="kw">let</span> pad  <span class="fu">=</span> padding d
+              mar  <span class="fu">=</span> margin d
+              bor  <span class="fu">=</span> border d
+              brec <span class="fu">=</span> content contBlock
+              drec <span class="fu">=</span> content d
+              x' <span class="fu">=</span> x brec
+                 <span class="fu">+</span> left (margin d)
+                 <span class="fu">+</span> left (border d)
+                 <span class="fu">+</span> left (padding d)
+              y' <span class="fu">=</span> y brec <span class="fu">+</span> height brec <span class="fu">+</span> pt <span class="fu">+</span> bt <span class="fu">+</span> mt
+           <span class="kw">in</span> d{ content <span class="fu">=</span> drec{ x <span class="fu">=</span> x', y <span class="fu">=</span> y' }
+               , padding <span class="fu">=</span> pad{ top <span class="fu">=</span> pt, bottom <span class="fu">=</span> pb }
+               , border  <span class="fu">=</span> bor{ top <span class="fu">=</span> bt, bottom <span class="fu">=</span> bb }
+               , margin  <span class="fu">=</span> mar{ top <span class="fu">=</span> mt, bottom <span class="fu">=</span> mb } }
+
+
+layoutChildren (<span class="dt">NTree</span> (dim,x) cs) <span class="fu">=</span> <span class="kw">do</span>
+    (dim',cs') <span class="ot">&lt;-</span> foldM foo (dim,[]) cs
+    return <span class="fu">$</span> <span class="dt">NTree</span> (dim',x) cs'
+
+    <span class="kw">where</span>
+        foo (d,acc) c<span class="fu">@</span>(<span class="dt">NTree</span> (cdim,_) _) <span class="fu">=</span> <span class="kw">do</span>
+            c'<span class="fu">@</span>(<span class="dt">NTree</span> (cdim',_)_) <span class="ot">&lt;-</span> layout c d
+            <span class="kw">let</span> rec <span class="fu">=</span> content d
+            return (d{ content <span class="fu">=</span>
+                rec{height <span class="fu">=</span> height rec <span class="fu">+</span> marginBoxHeight cdim'}}, acc <span class="fu">++</span> [c'])
+
+
+<span class="ot">calcHeight ::</span> <span class="dt">LayoutBox</span> <span class="ot">-&gt;</span> <span class="dt">Either</span> <span class="dt">T.Text</span> <span class="dt">LayoutBox</span>
+calcHeight root<span class="fu">@</span>(<span class="dt">NTree</span> (d,x)y) <span class="fu">=</span> <span class="kw">do</span>
+    s <span class="ot">&lt;-</span> getStyledElem root
+    <span class="kw">let</span> d' <span class="fu">=</span> <span class="kw">case</span> value s <span class="st">&quot;height&quot;</span> <span class="kw">of</span>
+             <span class="dt">Just</span> (<span class="dt">Length</span> h <span class="dt">Px</span>)  <span class="ot">-&gt;</span> d{content <span class="fu">=</span> (content d){height<span class="fu">=</span>h}}
+             <span class="dt">Nothing</span>             <span class="ot">-&gt;</span> d
+    return <span class="fu">$</span> <span class="dt">NTree</span> (d',x) y
+
+<span class="fu">-----------------------------</span> Css.hs <span class="fu">------------------------------</span>
+
+<span class="kw">data</span> <span class="dt">Value</span> <span class="fu">=</span> <span class="dt">Keyword</span> <span class="dt">T.Text</span>
+           <span class="fu">|</span> <span class="dt">ColorValue</span> <span class="dt">Color</span>
+           <span class="fu">|</span> <span class="dt">Length</span> <span class="dt">Float</span> <span class="dt">Unit</span>
+  <span class="kw">deriving</span> (<span class="dt">Show</span>, <span class="dt">Eq</span>)
+
+<span class="kw">data</span> <span class="dt">Color</span> <span class="fu">=</span> <span class="dt">Color</span> <span class="dt">Word8</span> <span class="dt">Word8</span> <span class="dt">Word8</span> <span class="dt">Word8</span>
+  <span class="kw">deriving</span> (<span class="dt">Show</span>, <span class="dt">Eq</span>)
+
+color <span class="fu">=</span> <span class="kw">do</span>
+    char <span class="ch">'#'</span>
+    cs <span class="ot">&lt;-</span> count <span class="dv">3</span> (count <span class="dv">2</span> hexDigit)
+    <span class="kw">let</span> [r,g,b] <span class="fu">=</span> map (fst <span class="fu">.</span> head <span class="fu">.</span> readHex) cs
+    return <span class="fu">$</span> <span class="dt">ColorValue</span> (<span class="dt">Color</span> r g b <span class="dv">255</span>)               </code></pre>
+<p>There are a couple other places where you’ll need to replace <code>foo rect</code> with <code>foo (content rect)</code> but the compiler will point them out.</p>
+<p>Now we’re ready to implement painting.</p>
+<p>Painting will be a two-phase process: first we construct a <code>DisplayList</code> from our layout tree, and then we write all the entries in the <code>DisplayList</code> to a canvas.</p>
+<pre class="sourceCode haskell"><code class="sourceCode haskell"><span class="ot">{-# LANGUAGE OverloadedStrings #-}</span>
+<span class="kw">module</span> <span class="dt">Painting</span>
+    ( <span class="dt">Canvas</span> (<span class="fu">..</span>)
+    , newCanvas
+    , paint
+    ) <span class="kw">where</span>
+
+<span class="kw">import </span><span class="dt">Data.Monoid</span> ((&lt;&gt;),mempty)
+<span class="kw">import </span><span class="dt">Data.Word</span>
+
+<span class="kw">import qualified</span> <span class="dt">Data.Foldable</span> <span class="kw">as</span> <span class="dt">F</span>
+<span class="kw">import qualified</span> <span class="dt">Data.Vector</span> <span class="kw">as</span> <span class="dt">V</span>
+<span class="kw">import qualified</span> <span class="dt">Data.Text</span> <span class="kw">as</span> <span class="dt">T</span>
+
+<span class="kw">import </span><span class="dt">Dom</span>
+<span class="kw">import </span><span class="dt">Layout</span>
+<span class="kw">import </span><span class="dt">Style</span>
+<span class="kw">import </span><span class="dt">CSS</span> (<span class="dt">Value</span>(<span class="dt">ColorValue</span>), <span class="dt">Color</span>(..))
+
+<span class="kw">type</span> <span class="dt">DisplayList</span> <span class="fu">=</span> <span class="dt">V.Vector</span> <span class="dt">DisplayCommand</span>
+
+<span class="kw">data</span> <span class="dt">DisplayCommand</span> <span class="fu">=</span> <span class="dt">SolidColor</span> <span class="dt">Color</span> <span class="dt">Rect</span>
+
+<span class="kw">data</span> <span class="dt">Canvas</span> <span class="fu">=</span> <span class="dt">Canvas</span> {<span class="ot"> pixels ::</span> <span class="dt">V.Vector</span> <span class="dt">Color</span>
+                     ,<span class="ot"> wdth   ::</span> <span class="dt">Word</span>   <span class="co">-- we need to abbreviate these because they conflict</span>
+                     ,<span class="ot"> hght   ::</span> <span class="dt">Word</span> } <span class="co">-- with Rect.width and Rect.height, GHC 7.10 fixes this</span>
+
+<span class="ot">newCanvas ::</span> <span class="dt">Word</span> <span class="ot">-&gt;</span> <span class="dt">Word</span> <span class="ot">-&gt;</span> <span class="dt">Canvas</span>
+newCanvas w h <span class="fu">=</span> <span class="kw">let</span> white <span class="fu">=</span> <span class="dt">Color</span> <span class="dv">255</span> <span class="dv">255</span> <span class="dv">255</span> <span class="dv">255</span> <span class="kw">in</span>
+                <span class="dt">Canvas</span> (V.replicate (fromIntegral(w <span class="fu">*</span> h)) white) w h</code></pre>
+<p>The <code>DisplayList</code> is an intermediate representation we can use to modify the data we draw, for instance by culling boxes that are entirely outside the screen. I suspect that a <code>Data.Vector</code> will be a good choice for this structure, but I’d like to minimize the amount of code we need to change if we later want to use something like <code>Data.Sequence</code> instead, so we’ll try to use functions from <code>Data.Foldable</code> where possible. Right now we’re only drawing boxes, so our <code>DisplayCommand</code> is just a solid color and a rectangle.</p>
+<p>Building a <code>DisplayList</code> is a simple fold:</p>
+<pre class="sourceCode haskell"><code class="sourceCode haskell"><span class="ot">buildDisplayList ::</span> <span class="dt">LayoutBox</span> <span class="ot">-&gt;</span> <span class="dt">DisplayList</span>
+buildDisplayList lbox <span class="fu">=</span> F.foldMap renderLayoutBox lbox</code></pre>
+<p>Rendering a layout box consists of drawing the background rectangle, and then a rect for each border. If a color isn’t specified for the background or borders, we don’t add a <code>DisplayCommand</code> for that part.</p>
+<pre class="sourceCode haskell"><code class="sourceCode haskell"><span class="ot">renderLayoutBox ::</span> (<span class="dt">Dimensions</span>,<span class="dt">BoxType</span>) <span class="ot">-&gt;</span> <span class="dt">DisplayList</span>
+renderLayoutBox box <span class="fu">=</span> renderBackgroud box <span class="fu">&lt;&gt;</span> renderBorders box
+
+
+<span class="ot">renderBackgroud ::</span> (<span class="dt">Dimensions</span>,<span class="dt">BoxType</span>) <span class="ot">-&gt;</span> <span class="dt">DisplayList</span>
+renderBackgroud (dim,ty) <span class="fu">=</span> maybe mempty
+    (return <span class="fu">.</span> flip <span class="dt">SolidColor</span> (borderBox dim)) (getColor ty <span class="st">&quot;background&quot;</span>)
+
+
+<span class="ot">renderBorders ::</span> (<span class="dt">Dimensions</span>,<span class="dt">BoxType</span>) <span class="ot">-&gt;</span> <span class="dt">DisplayList</span>
+renderBorders (dim,ty) <span class="fu">=</span> maybe mempty renderBorders' (getColor ty <span class="st">&quot;border-color&quot;</span>)
+  <span class="kw">where</span>
+    renderBorders' color <span class="fu">=</span> V.fromList <span class="fu">$</span> map (<span class="dt">SolidColor</span> color) [l, r, t, b]
+    bbox <span class="fu">=</span> borderBox dim
+    bdr  <span class="fu">=</span> border dim
+    
+    l <span class="fu">=</span> bbox{ width <span class="fu">=</span> left bdr }
+    
+    r <span class="fu">=</span> bbox{ x     <span class="fu">=</span> x bbox <span class="fu">+</span> width bbox <span class="fu">-</span> right bdr
+            , width <span class="fu">=</span> right bdr }
+    
+    t <span class="fu">=</span> bbox{ height <span class="fu">=</span> top bdr }
+    
+    b <span class="fu">=</span> bbox{ y      <span class="fu">=</span> y bbox <span class="fu">+</span> height bbox <span class="fu">-</span> bottom bdr
+            , height <span class="fu">=</span> bottom bdr }
+
+
+<span class="ot">getColor ::</span> <span class="dt">BoxType</span> <span class="ot">-&gt;</span> <span class="dt">T.Text</span> <span class="ot">-&gt;</span> <span class="dt">Maybe</span> <span class="dt">Color</span>
+getColor (<span class="dt">BlockNode</span> style) name  <span class="fu">=</span> getColor' style name
+getColor (<span class="dt">InlineNode</span> style) name <span class="fu">=</span> getColor' style name
+getColor <span class="dt">AnonymousBlock</span> _        <span class="fu">=</span> <span class="dt">Nothing</span>
+
+getColor' style name <span class="fu">=</span> <span class="kw">case</span> value (<span class="dt">NTree</span> style []) name <span class="kw">of</span>
+                         <span class="dt">Just</span> (<span class="dt">ColorValue</span> (<span class="dt">Color</span> r g b a)) <span class="ot">-&gt;</span> <span class="dt">Just</span> (<span class="dt">Color</span> r g b a)
+                         _                    <span class="ot">-&gt;</span> <span class="dt">Nothing</span></code></pre>
+<p>We’re not actually implementing any functions to modify the <code>DisplayList</code> right now, so all that’s left is painting. We draw each command on top of the previous one.</p>
+<pre class="sourceCode haskell"><code class="sourceCode haskell"><span class="ot">paint ::</span> <span class="dt">LayoutBox</span> <span class="ot">-&gt;</span> <span class="dt">Rect</span> <span class="ot">-&gt;</span> <span class="dt">Canvas</span>
+paint root bounds <span class="fu">=</span> <span class="kw">let</span> dlist  <span class="fu">=</span> buildDisplayList root
+                        canvas <span class="fu">=</span> newCanvas w h
+                        w <span class="fu">=</span> fromInteger <span class="fu">.</span> floor <span class="fu">$</span> width  bounds
+                        h <span class="fu">=</span> fromInteger <span class="fu">.</span> floor <span class="fu">$</span> height bounds
+                    <span class="kw">in</span> F.foldl' paintItem canvas dlist
+
+
+<span class="ot">paintItem ::</span> <span class="dt">Canvas</span> <span class="ot">-&gt;</span> <span class="dt">DisplayCommand</span> <span class="ot">-&gt;</span> <span class="dt">Canvas</span>
+paintItem cs (<span class="dt">SolidColor</span> color rect) <span class="fu">=</span> updateChunk cs (x0,x1) (y0,y1) color
+  <span class="kw">where</span>
+    x0 <span class="fu">=</span> clampInt <span class="dv">0</span> (w<span class="fu">-</span><span class="dv">1</span>) (x rect)
+    y0 <span class="fu">=</span> clampInt <span class="dv">0</span> (h<span class="fu">-</span><span class="dv">1</span>) (y rect)
+    x1 <span class="fu">=</span> clampInt <span class="dv">0</span> (w<span class="fu">-</span><span class="dv">1</span>) (x rect <span class="fu">+</span> width rect <span class="fu">-</span> <span class="dv">1</span>)
+    y1 <span class="fu">=</span> clampInt <span class="dv">0</span> (h<span class="fu">-</span><span class="dv">1</span>) (y rect <span class="fu">+</span> height rect <span class="fu">-</span> <span class="dv">1</span>)
+    w <span class="fu">=</span> asFloat <span class="fu">$</span> wdth cs
+    h <span class="fu">=</span> asFloat <span class="fu">$</span> hght cs
+    asFloat <span class="fu">=</span> fromInteger <span class="fu">.</span> toInteger
+
+
+
+<span class="co">-- this probably modifies the pixel vector in-place, if I'm reading the</span>
+<span class="co">-- Data.Vector source correctly</span>
+<span class="ot">updateChunk ::</span> <span class="dt">Canvas</span> <span class="ot">-&gt;</span> (<span class="dt">Integer</span>,<span class="dt">Integer</span>) <span class="ot">-&gt;</span> (<span class="dt">Integer</span>,<span class="dt">Integer</span>) <span class="ot">-&gt;</span> <span class="dt">Color</span> <span class="ot">-&gt;</span> <span class="dt">Canvas</span>
+updateChunk cs (x0,x1) (y0,y1) c <span class="fu">=</span> <span class="kw">let</span> pxs <span class="fu">=</span> V.update (pixels cs) chunk <span class="kw">in</span>
+                                   cs{ pixels <span class="fu">=</span> pxs}
+  <span class="kw">where</span>
+    chunk <span class="fu">=</span> V.map (\a<span class="ot">-&gt;</span>(fromIntegral a,c)) indicies
+    indicies <span class="fu">=</span> V.fromList [ y <span class="fu">*</span> (toInteger <span class="fu">$</span> wdth cs) <span class="fu">+</span> x <span class="fu">|</span> x <span class="ot">&lt;-</span> [x0<span class="fu">..</span>x1], y <span class="ot">&lt;-</span> [y0<span class="fu">..</span>y1] ]
+
+
+<span class="ot">clampInt ::</span> <span class="dt">Float</span> <span class="ot">-&gt;</span> <span class="dt">Float</span> <span class="ot">-&gt;</span> <span class="dt">Float</span> <span class="ot">-&gt;</span> <span class="dt">Integer</span>
+clampInt f c <span class="fu">=</span> floor <span class="fu">.</span> min c <span class="fu">.</span> max f</code></pre>
+<p>Note that this code differs slightly from the equivalent Rust code in Robinson: clamping to [0,height] and [0,width] is a runtime error (you’ll try to write one row/column of pixels too far, I’m not sure why Rust allows it), and straight up adding the dimensions to the coordinates will also result in boxes that are 1 pixel too large in both dimensions.</p>
+<p>That’s all our painting code, we just need to add a quick test to make sure it works. We’ll need a library to load images for this, and sadly there isn’t one included in the Haskell Platform, so we’ll need to install it. Add the following lines to build-depends in your .cabal file:</p>
+<pre><code>vector &gt;= 0.10.9.1,
+JuicyPixels &gt;= 3.1.7.1</code></pre>
+<p>And then in a command prompt run:</p>
+<pre class="sourceCode bash"><code class="sourceCode bash"><span class="kw">cabal</span> update
+<span class="kw">cabal</span> install --enable-tests --only-dependencies</code></pre>
+<p>This will install the JuicyPixels library, which has good support for dealing with images in the most common formats.</p>
+<p>We’ll add one test (you’ll need to grab rainbow.png from the github repo)</p>
+<pre class="sourceCode haskell"><code class="sourceCode haskell"><span class="co">-- add these at the top of tests.hs</span>
+<span class="kw">import </span><span class="dt">Data.Maybe</span>
+
+<span class="kw">import qualified</span> <span class="dt">Data.Vector</span> <span class="kw">as</span> <span class="dt">V</span>
+
+<span class="kw">import </span><span class="dt">Codec.Picture</span>
+<span class="kw">import </span><span class="dt">Codec.Picture.Types</span>
+
+<span class="kw">import </span><span class="dt">Painting</span>
+
+<span class="fu">-----------------------------</span> <span class="dt">PAINT</span> <span class="dt">TESTS</span> <span class="fu">---------------------------</span>
+
+testPaint <span class="fu">=</span> <span class="dt">TestCase</span> <span class="fu">$</span> <span class="kw">do</span> 
+    testpng <span class="ot">&lt;-</span> readPng <span class="st">&quot;tests/rainbow.png&quot;</span>
+    either (\_<span class="ot">-&gt;</span>assertFailure <span class="st">&quot;missing png image&quot;</span>)
+           (compareImage paintpng)
+           testpng
+
+compareImage (<span class="dt">Left</span> e) _ <span class="fu">=</span> assertFailure <span class="fu">$</span> T.unpack e
+compareImage (<span class="dt">Right</span> i1) (<span class="dt">ImageRGB8</span> i2) <span class="fu">=</span> <span class="kw">do</span>
+  assertEqual <span class="st">&quot;height&quot;</span> (imageHeight i1) (imageHeight i2)
+  assertEqual <span class="st">&quot;width&quot;</span>  (imageWidth i1)  (imageWidth i2)
+  assertEqual <span class="st">&quot;pixels&quot;</span> (imageData i1)   (imageData i2)
+
+
+contBlock <span class="fu">=</span> defaultDim{content <span class="fu">=</span> (content defaultDim){ width<span class="fu">=</span><span class="dv">800</span>, height<span class="fu">=</span><span class="dv">168</span> } }
+
+paintpng <span class="fu">=</span> paintpng' s d
+  <span class="kw">where</span>
+    (<span class="dt">Right</span> d) <span class="fu">=</span> PS.parseHtml pnghtml
+    (<span class="dt">Right</span> s) <span class="fu">=</span> parseCSS pngcss
+    paintpng' s d <span class="fu">=</span> <span class="kw">do</span>
+      <span class="kw">let</span> st <span class="fu">=</span> styleTree d s
+      lyt <span class="ot">&lt;-</span> layoutTree st contBlock
+      <span class="kw">let</span> vec <span class="fu">=</span> pixels <span class="fu">$</span> paint lyt (content contBlock)
+      return <span class="fu">$</span> generateImage (\x y<span class="ot">-&gt;</span> c2px <span class="fu">$</span> vec <span class="fu">V.!</span> (x <span class="fu">+</span> (y <span class="fu">*</span> <span class="dv">800</span>))) <span class="dv">800</span> <span class="dv">168</span>
+    c2px (<span class="dt">Color</span> r g b _) <span class="fu">=</span> <span class="dt">PixelRGB8</span> r g b
+
+pnghtml <span class="fu">=</span> <span class="st">&quot;&lt;div class=\&quot;a\&quot;&gt;\</span>
+<span class="st">\  &lt;div class=\&quot;b\&quot;&gt;\</span>
+<span class="st">\    &lt;div class=\&quot;c\&quot;&gt;\</span>
+<span class="st">\      &lt;div class=\&quot;d\&quot;&gt;\</span>
+<span class="st">\        &lt;div class=\&quot;e\&quot;&gt;\</span>
+<span class="st">\          &lt;div class=\&quot;f\&quot;&gt;\</span>
+<span class="st">\            &lt;div class=\&quot;g\&quot;&gt;\</span>
+<span class="st">\            &lt;/div&gt;\</span>
+<span class="st">\          &lt;/div&gt;\</span>
+<span class="st">\        &lt;/div&gt;\</span>
+<span class="st">\      &lt;/div&gt;\</span>
+<span class="st">\    &lt;/div&gt;\</span>
+<span class="st">\  &lt;/div&gt;\</span>
+<span class="st">\&lt;/div&gt;&quot;</span>
+
+pngcss <span class="fu">=</span> <span class="st">&quot;* { display: block; padding: 12px; }\</span>
+<span class="st">\.a { background: #ff0000; }\</span>
+<span class="st">\.b { background: #ffa500; }\</span>
+<span class="st">\.c { background: #ffff00; }\</span>
+<span class="st">\.d { background: #008000; }\</span>
+<span class="st">\.e { background: #0000ff; }\</span>
+<span class="st">\.f { background: #4b0082; }\</span>
+<span class="st">\.g { background: #800080; }&quot;</span></code></pre>
+<p>Don’t forget to add <code>testPaint</code> to the test list.</p>
+<p>That’s everything for painting. I might put up another post covering some refactorings and additions to the current code before the next Robinson update comes out, or I might work on something completely different for a bit. We’ll see.</p>
+<p>As usual, you can find the source for this post <a href="https://github.com/Hrothen/Hubert/blob/master/src/Painting.hs">here</a> and the source for Robinson <a href="https://github.com/mbrubeck/robinson">here</a>.</p>
+    
+    <nav id="postNav">
+        
+            <a href="../posts/lets-write-a-browser-engine-in-haskell-a-lens-interlude.html" style="float:left;">Previous post</a>
+        
+        
+            <a href="../posts/lets-build-a-browser-engine-in-haskell-part-5.html" style="float:right; text-align: right;">Next post</a>
+        
+    </nav>
+</article>
+        </div>
+        <footer>
+            <div style="float: left; text-align: left;">
+                &copy;Leif Grele
+                <br>
+                github.com/hrothen
+            </div>
+            <div>
+                Site proudly generated by
+                <a href="http://jaspervdj.be/hakyll">Hakyll</a>
+            </div>
+        </footer>
+    </body>
+</html>

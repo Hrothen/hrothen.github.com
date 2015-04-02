@@ -1,0 +1,287 @@
+<?xml version="1.0" encoding="UTF-8" ?>
+<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd">
+<html xmlns="http://www.w3.org/1999/xhtml" xml:lang="en" lang="en">
+    <head>
+        <meta http-equiv="Content-Type" content="text/html; charset=UTF-8" />
+        <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+        <title>Also Sprach Leif - Let's Build a Browser Engine in Haskell: part 5</title>
+        <link rel="stylesheet" type="text/css" href="../css/default.css" />
+    </head>
+    <body>
+        <header>
+            <div id="logo">
+                <a href="../">Also Sprach Leif</a>
+            </div>
+            <nav>
+                <a href="../">Home</a>
+                <a href="../about.html">About</a>
+                <a href="../archive.html">Archive</a>
+                <a href="../atom.xml">Feed</a>
+            </nav>
+            <div id="tagline">
+                Math, Programming, Games, and whatever else I feel like
+            </div>
+        </header>
+
+        <div id="content">
+            <h1>Let's Build a Browser Engine in Haskell: part 5</h1>
+
+            <article>
+    <div class="info">
+        Posted on October  1, 2014
+        
+    </div>
+    
+    <p>Welcome back, today we’re going to implement Boxes and also the Block Layout, because Matt’s post on Boxes was mostly talking about how they’re set up and I don’t have to do that since he already has. To start with we’re going to want to set up our imports and define some new types.</p>
+<pre class="sourceCode haskell"><code class="sourceCode haskell"><span class="ot">{-#LANGUAGE BangPatterns, OverloadedStrings#-}</span>
+<span class="kw">module</span> <span class="dt">Layout</span> <span class="kw">where</span>
+
+<span class="kw">import </span><span class="dt">Prelude</span> <span class="kw">hiding</span> (lookup)
+<span class="kw">import </span><span class="dt">Control.Applicative</span> ((&lt;$&gt;))
+<span class="kw">import </span><span class="dt">Control.Monad</span> (foldM)
+<span class="kw">import </span><span class="dt">Data.List</span> (foldl', groupBy)
+<span class="kw">import </span><span class="dt">Data.Maybe</span> (fromMaybe)
+
+<span class="kw">import qualified</span> <span class="dt">Data.Text</span> <span class="kw">as</span> <span class="dt">T</span>
+
+<span class="kw">import </span><span class="dt">Dom</span>
+<span class="kw">import </span><span class="dt">CSS</span>
+<span class="kw">import </span><span class="dt">Style</span>
+
+<span class="kw">data</span> <span class="dt">Dimensions</span> <span class="fu">=</span> <span class="dt">Dimensions</span> {<span class="ot"> x       ::</span> <span class="dt">Float</span>
+                             ,<span class="ot"> y       ::</span> <span class="dt">Float</span>
+                             ,<span class="ot"> width   ::</span> <span class="dt">Float</span>
+                             ,<span class="ot"> height  ::</span> <span class="dt">Float</span>
+                             ,<span class="ot"> padding ::</span> <span class="dt">EdgeSize</span>
+                             ,<span class="ot"> border  ::</span> <span class="dt">EdgeSize</span>
+                             ,<span class="ot"> margin  ::</span> <span class="dt">EdgeSize</span> }
+
+<span class="kw">data</span> <span class="dt">EdgeSize</span> <span class="fu">=</span> <span class="dt">EdgeSize</span> {<span class="ot"> left   ::</span> <span class="dt">Float</span>
+                         ,<span class="ot"> right  ::</span> <span class="dt">Float</span>
+                         ,<span class="ot"> top    ::</span> <span class="dt">Float</span>
+                         ,<span class="ot"> bottom ::</span> <span class="dt">Float</span> }
+
+<span class="kw">type</span> <span class="dt">LayoutBox</span> <span class="fu">=</span> <span class="dt">NTree</span> (<span class="dt">Dimensions</span>,<span class="dt">BoxType</span>)
+
+<span class="kw">type</span> <span class="dt">StyledElement</span> <span class="fu">=</span> (<span class="dt">NodeType</span>,<span class="dt">PropertyMap</span>)
+
+<span class="kw">data</span> <span class="dt">BoxType</span> <span class="fu">=</span> <span class="dt">BlockNode</span> <span class="dt">StyledElement</span> <span class="fu">|</span> <span class="dt">InlineNode</span> <span class="dt">StyledElement</span> <span class="fu">|</span> <span class="dt">AnonymousBlock</span>
+
+emptyEdge <span class="fu">=</span> <span class="dt">EdgeSize</span> <span class="dv">0</span> <span class="dv">0</span> <span class="dv">0</span> <span class="dv">0</span>
+
+defaultDim <span class="fu">=</span> <span class="dt">Dimensions</span> <span class="dv">0</span> <span class="dv">0</span> <span class="dv">0</span> <span class="dv">0</span> emptyEdge emptyEdge emptyEdge</code></pre>
+<p>We’ll also want to add some code to the style module:</p>
+<pre class="sourceCode haskell"><code class="sourceCode haskell"><span class="kw">data</span> <span class="dt">Display</span> <span class="fu">=</span> <span class="dt">Inline</span> <span class="fu">|</span> <span class="dt">Block</span> <span class="fu">|</span> <span class="dt">DisplayNone</span>
+  <span class="kw">deriving</span> (<span class="dt">Eq</span>)
+
+<span class="co">-- if name exists, return its specified value</span>
+<span class="ot">value ::</span> <span class="dt">StyledNode</span> <span class="ot">-&gt;</span> <span class="dt">T.Text</span> <span class="ot">-&gt;</span> <span class="dt">Maybe</span> <span class="dt">Value</span>
+value (<span class="dt">NTree</span> node _) name <span class="fu">=</span> HM.lookup name (snd node)
+
+<span class="co">-- look up the display value of a node</span>
+<span class="ot">display ::</span> <span class="dt">StyledNode</span> <span class="ot">-&gt;</span> <span class="dt">Display</span>
+display n <span class="fu">=</span> <span class="kw">case</span> value n <span class="st">&quot;display&quot;</span> <span class="kw">of</span>
+    <span class="dt">Just</span> (<span class="dt">Keyword</span> <span class="st">&quot;block&quot;</span>) <span class="ot">-&gt;</span> <span class="dt">Block</span>
+    <span class="dt">Just</span> (<span class="dt">Keyword</span> <span class="st">&quot;none&quot;</span>)  <span class="ot">-&gt;</span> <span class="dt">DisplayNone</span>
+    _ <span class="ot">-&gt;</span> <span class="dt">Inline</span>
+
+<span class="co">-- this lookup is different than the robinson one, it supports</span>
+<span class="co">-- an arbitrary number of possible keywords</span>
+
+<span class="co">-- return the specified value of the first property in ks to exist</span>
+<span class="co">-- or def if no properties match</span>
+lookup<span class="ot"> ::</span> <span class="dt">StyledNode</span> <span class="ot">-&gt;</span> [<span class="dt">T.Text</span>] <span class="ot">-&gt;</span> <span class="dt">Value</span> <span class="ot">-&gt;</span> <span class="dt">Value</span>
+lookup s ks def <span class="fu">=</span> maybe def (fromJust <span class="fu">.</span> value s) (find (isJust <span class="fu">.</span> value s) ks)</code></pre>
+<p>And a single helper function to CSS</p>
+<pre class="sourceCode haskell"><code class="sourceCode haskell"><span class="ot">toPx ::</span> <span class="dt">Value</span> <span class="ot">-&gt;</span> <span class="dt">Float</span>
+toPx (<span class="dt">Length</span> len <span class="dt">Px</span>) <span class="fu">=</span> len
+toPx _               <span class="fu">=</span> <span class="dv">0</span></code></pre>
+<p>Now we can start to work on the layout tree. Our first function traverses the style tree and builds a box for each node. Nodes with <code>display=&quot;none&quot;</code> (and their children) are filtered from the tree, and adjacent Inline boxes that are children of a Block node are grouped together beneath Anonymous boxes. We also give every node a default initial set of dimensions.</p>
+<pre class="sourceCode haskell"><code class="sourceCode haskell"><span class="ot">buildLayoutTree ::</span> <span class="dt">StyledNode</span> <span class="ot">-&gt;</span> <span class="dt">Either</span> <span class="dt">T.Text</span> <span class="dt">LayoutBox</span>
+buildLayoutTree root <span class="fu">=</span> <span class="kw">case</span> display root <span class="kw">of</span>
+    <span class="dt">Block</span>       <span class="ot">-&gt;</span> <span class="dt">Right</span> <span class="fu">$</span> addDim <span class="fu">&lt;$&gt;</span> blt root
+    <span class="dt">Inline</span>      <span class="ot">-&gt;</span> <span class="dt">Right</span> <span class="fu">$</span> addDim <span class="fu">&lt;$&gt;</span> blt root
+    <span class="dt">DisplayNone</span> <span class="ot">-&gt;</span> <span class="dt">Left</span> <span class="st">&quot;error: root node has display:none&quot;</span>
+  <span class="kw">where</span>
+    addDim x <span class="fu">=</span> (defaultDim,x)
+
+    blt rt<span class="fu">@</span>(<span class="dt">NTree</span> nd cs) <span class="fu">=</span> <span class="dt">NTree</span> n ns
+      <span class="kw">where</span> 
+        (<span class="fu">!</span>n, <span class="fu">!</span>ns) <span class="fu">=</span> <span class="kw">case</span> display rt <span class="kw">of</span>
+            <span class="dt">Block</span>  <span class="ot">-&gt;</span> (<span class="dt">BlockNode</span>  nd, anonify ns')
+            <span class="dt">Inline</span> <span class="ot">-&gt;</span> (<span class="dt">InlineNode</span> nd, ns')
+            <span class="co">-- won't ever hit DisplayNone, it's filtered out</span>
+        
+        anonify <span class="fu">=</span> concatMap mergeInlines <span class="fu">.</span> groupBy (\x y <span class="ot">-&gt;</span> isInline x <span class="fu">&amp;&amp;</span> isInline y)
+        
+        mergeInlines x <span class="fu">=</span> <span class="kw">if</span> isInline <span class="fu">$</span> head x <span class="kw">then</span> [<span class="dt">NTree</span> <span class="dt">AnonymousBlock</span> x] <span class="kw">else</span> x
+
+        isInline (<span class="dt">NTree</span> <span class="dt">InlineNode</span>{} _) <span class="fu">=</span> <span class="dt">True</span>
+        isInline _                      <span class="fu">=</span> <span class="dt">False</span>
+        
+        ns' <span class="fu">=</span> map blt <span class="fu">$</span> filter ((<span class="fu">/=</span><span class="dt">DisplayNone</span>) <span class="fu">.</span> display) cs</code></pre>
+<p>I’m a little worried about the space performance of this function, for now I’ve used the <code>BangPatterns</code> pragma which allows me to mark <code>n</code> and <code>ns</code> as “strict” (really just evaluated to <a href="http://www.haskell.org/haskellwiki/Weak_head_normal_form">weak head normal form</a>) by prefixing them with an exclamation point. This should hopefully prevent the program from building up a huge set of thunks while traversing the tree (reasoning about strictness/laziness and space usage are areas I need to improve on).</p>
+<p>We now add some code to set the dimensions on the layout tree, at the moment we’ll only support Block nodes, so anything without <code>display=&quot;block&quot;</code> set will give us an error (I won’t be adding a test for this part yet).</p>
+<pre class="sourceCode haskell"><code class="sourceCode haskell"><span class="co">-- walk a layout tree, setting the dimensions of each node</span>
+<span class="ot">layout ::</span> <span class="dt">LayoutBox</span> <span class="ot">-&gt;</span> <span class="dt">Dimensions</span> <span class="ot">-&gt;</span> <span class="dt">Either</span> <span class="dt">T.Text</span> <span class="dt">LayoutBox</span>
+layout l<span class="fu">@</span>(<span class="dt">NTree</span> (_,box)_) contBlock <span class="fu">=</span> <span class="kw">case</span> box <span class="kw">of</span>
+    <span class="dt">BlockNode</span>  _   <span class="ot">-&gt;</span> layoutBlock contBlock l
+    <span class="dt">InlineNode</span> _   <span class="ot">-&gt;</span> undefined
+    <span class="dt">AnonymousBlock</span> <span class="ot">-&gt;</span> undefined
+
+
+layoutBlock dim root <span class="fu">=</span> calcWidth dim root <span class="fu">&gt;&gt;=</span>
+                       calcPosition dim   <span class="fu">&gt;&gt;=</span>
+                       layoutChildren     <span class="fu">&gt;&gt;=</span> <span class="co">-- you know what? this might leak</span>
+                       calcHeight </code></pre>
+<p><code>layoutBlock</code> starts at the root, computes the width and position of the node, then does the same for all its children. Once the whole tree has been set out, we walk back up it from the leaves calculating the height of each node. It’s possible that recursing in the middle of the function could cause problems for large pages, although that is also how the Rust implementation is written. This will probably get refactored later.</p>
+<p>Calculating the width is fairly ugly, nothing is complicated, but there are a bunch of boundary checks to make.</p>
+<pre class="sourceCode haskell"><code class="sourceCode haskell"><span class="ot">calcWidth ::</span> <span class="dt">Dimensions</span> <span class="ot">-&gt;</span> <span class="dt">LayoutBox</span> <span class="ot">-&gt;</span> <span class="dt">Either</span> <span class="dt">T.Text</span> <span class="dt">LayoutBox</span>
+calcWidth contBlock root<span class="fu">@</span>(<span class="dt">NTree</span> (dim,x) y) <span class="fu">=</span> <span class="kw">do</span>
+    style <span class="ot">&lt;-</span> getStyledElem root
+    <span class="kw">let</span>
+      auto <span class="fu">=</span> <span class="dt">Keyword</span> <span class="st">&quot;auto&quot;</span>
+      zero <span class="fu">=</span> <span class="dt">Length</span> <span class="dv">0</span> <span class="dt">Px</span>
+      w <span class="fu">=</span> fromMaybe auto <span class="fu">$</span> value style <span class="st">&quot;width&quot;</span>
+      vals <span class="fu">=</span> map (\a <span class="ot">-&gt;</span> lookup style a zero) [
+                    [<span class="st">&quot;margin-left&quot;</span>       , <span class="st">&quot;margin&quot;</span>]
+                  , [<span class="st">&quot;margin-right&quot;</span>      , <span class="st">&quot;margin&quot;</span>]
+                  , [<span class="st">&quot;border-left-width&quot;</span> , <span class="st">&quot;border-width&quot;</span>]
+                  , [<span class="st">&quot;border-right-width&quot;</span>, <span class="st">&quot;border-width&quot;</span>]
+                  , [<span class="st">&quot;padding-left&quot;</span>      , <span class="st">&quot;padding&quot;</span>]
+                  , [<span class="st">&quot;padding-right&quot;</span>     , <span class="st">&quot;padding&quot;</span>] ]
+      total <span class="fu">=</span> sum <span class="fu">$</span> map toPx (w<span class="fu">:</span>vals)
+      underflow <span class="fu">=</span> width contBlock <span class="fu">-</span> total
+
+      ([ml'',mr''],vals') <span class="fu">=</span> splitAt <span class="dv">2</span> vals
+      (w',ml',mr') <span class="fu">=</span> checkUnderflow w <span class="fu">$</span> checkAutoMargins (ml'',mr'')
+
+      checkAutoMargins (x,y)
+          <span class="fu">|</span> w <span class="fu">/=</span> auto <span class="fu">&amp;&amp;</span> total <span class="fu">&gt;</span> width contBlock <span class="fu">=</span> (check x,check y)
+          <span class="fu">|</span> otherwise <span class="fu">=</span> (x,y)
+        <span class="kw">where</span> check a <span class="fu">=</span> <span class="kw">if</span> a <span class="fu">==</span> auto <span class="kw">then</span> zero <span class="kw">else</span> a
+
+      checkUnderflow w (mlf,mrt) <span class="fu">=</span> <span class="kw">case</span> (w <span class="fu">==</span> auto, mlf <span class="fu">==</span> auto, mrt <span class="fu">==</span> auto) <span class="kw">of</span>
+          (<span class="dt">False</span>,<span class="dt">False</span>,<span class="dt">False</span>) <span class="ot">-&gt;</span> (w , mlf, <span class="dt">Length</span> (toPx mrt <span class="fu">+</span> underflow) <span class="dt">Px</span>)
+          (<span class="dt">False</span>,<span class="dt">False</span>,<span class="dt">True</span>)  <span class="ot">-&gt;</span> (w , mlf, <span class="dt">Length</span> underflow <span class="dt">Px</span>)
+          (<span class="dt">False</span>,<span class="dt">True</span>,<span class="dt">False</span>)  <span class="ot">-&gt;</span> (w , <span class="dt">Length</span> underflow <span class="dt">Px</span>    , mrt)
+          (<span class="dt">False</span>,<span class="dt">True</span>,<span class="dt">True</span>)   <span class="ot">-&gt;</span> (w , <span class="dt">Length</span> (underflow<span class="fu">/</span><span class="dv">2</span>) <span class="dt">Px</span>, <span class="dt">Length</span> (underflow<span class="fu">/</span><span class="dv">2</span>) <span class="dt">Px</span>)
+          (<span class="dt">True</span>,_,_)          <span class="ot">-&gt;</span>
+              <span class="kw">let</span> l <span class="fu">=</span> <span class="kw">if</span> mlf <span class="fu">==</span> auto <span class="kw">then</span> zero <span class="kw">else</span> mlf
+                  r <span class="fu">=</span> <span class="kw">if</span> mrt <span class="fu">==</span> auto <span class="kw">then</span> zero <span class="kw">else</span> mrt
+               <span class="kw">in</span> <span class="kw">if</span> underflow <span class="fu">&gt;=</span> <span class="dv">0</span>  <span class="kw">then</span> (<span class="dt">Length</span> underflow <span class="dt">Px</span>,l,r)
+                                     <span class="kw">else</span> (zero,l,<span class="dt">Length</span> (toPx r <span class="fu">+</span> underflow) <span class="dt">Px</span>)
+
+      [w'',ml,mr,blw,brw,plf,prt] <span class="fu">=</span> map toPx (w'<span class="fu">:</span>ml'<span class="fu">:</span>mr'<span class="fu">:</span>vals')
+
+
+      updateDim d <span class="fu">=</span> <span class="kw">let</span> pad <span class="fu">=</span> padding d
+                        mar <span class="fu">=</span> margin d
+                        bor <span class="fu">=</span> border d
+                     <span class="kw">in</span> d{ width <span class="fu">=</span> w''
+                         , padding <span class="fu">=</span> pad{ left <span class="fu">=</span> plf, right <span class="fu">=</span> prt}
+                         , border  <span class="fu">=</span> bor{ left <span class="fu">=</span> blw, right <span class="fu">=</span> brw}
+                         , margin  <span class="fu">=</span> mar{ left <span class="fu">=</span> ml,  right <span class="fu">=</span> mr} }
+
+    return <span class="fu">$</span> <span class="dt">NTree</span> (updateDim dim,x) y
+
+
+<span class="ot">getStyledElem ::</span> <span class="dt">LayoutBox</span> <span class="ot">-&gt;</span> <span class="dt">Either</span> <span class="dt">T.Text</span> <span class="dt">StyledNode</span>
+getStyledElem (<span class="dt">NTree</span> (_,box) _) <span class="fu">=</span> <span class="kw">case</span> box <span class="kw">of</span>
+    <span class="dt">BlockNode</span>  s   <span class="ot">-&gt;</span> <span class="dt">Right</span> <span class="fu">$</span> <span class="dt">NTree</span> s []
+    <span class="dt">InlineNode</span> s   <span class="ot">-&gt;</span> <span class="dt">Right</span> <span class="fu">$</span> <span class="dt">NTree</span> s []
+    <span class="dt">AnonymousBlock</span> <span class="ot">-&gt;</span> <span class="dt">Left</span> <span class="st">&quot;Error: attempted to access the nonexistant\</span>
+<span class="st">                           \ StyleNode of an AnonymousBlock&quot;</span></code></pre>
+<p>This will probably be refactored to look a bit nicer, something like</p>
+<pre class="sourceCode haskell"><code class="sourceCode haskell"><span class="ot">calcWidth ::</span> <span class="dt">Dimensions</span> <span class="ot">-&gt;</span> <span class="dt">LayoutBox</span> <span class="ot">-&gt;</span> <span class="dt">Either</span> <span class="dt">T.Text</span> <span class="dt">LayoutBox</span>
+calcWidth contBlock root<span class="fu">@</span>(<span class="dt">NTree</span> (dim,x) y) <span class="fu">=</span> checkBounds <span class="fu">&lt;$&gt;</span> getStyledElem rt
+  <span class="kw">where</span>
+    checkBounds <span class="fu">=</span> updateDim <span class="fu">.</span> checkUnderflow <span class="fu">.</span> checkAutoMargins <span class="fu">.</span> computeVals</code></pre>
+<p>The resulting function there won’t be any nicer, but at least you get a quick idea of what it’s doing.</p>
+<p>The remaining functions aren’t as bad.</p>
+<pre class="sourceCode haskell"><code class="sourceCode haskell"><span class="ot">calcPosition ::</span> <span class="dt">Dimensions</span> <span class="ot">-&gt;</span> <span class="dt">LayoutBox</span> <span class="ot">-&gt;</span> <span class="dt">Either</span> <span class="dt">T.Text</span> <span class="dt">LayoutBox</span>
+calcPosition contBlock root<span class="fu">@</span>(<span class="dt">NTree</span> (dim,a)b) <span class="fu">=</span> <span class="kw">do</span>
+    style <span class="ot">&lt;-</span> getStyledElem root
+    
+    <span class="kw">let</span>
+      zero <span class="fu">=</span> <span class="dt">Length</span> <span class="dv">0</span> <span class="dt">Px</span>
+
+      vals <span class="fu">=</span> map (toPx <span class="fu">.</span>  (\a <span class="ot">-&gt;</span> lookup style a zero)) [
+                    [<span class="st">&quot;margin-top&quot;</span>         , <span class="st">&quot;margin&quot;</span>]
+                  , [<span class="st">&quot;margin-bottom&quot;</span>      , <span class="st">&quot;margin&quot;</span>]
+                  , [<span class="st">&quot;border-top-width&quot;</span>   , <span class="st">&quot;border-width&quot;</span>]
+                  , [<span class="st">&quot;border-bottom-width&quot;</span>, <span class="st">&quot;border-width&quot;</span>]
+                  , [<span class="st">&quot;padding-top&quot;</span>        , <span class="st">&quot;padding&quot;</span>]
+                  , [<span class="st">&quot;padding-bottom&quot;</span>     , <span class="st">&quot;padding&quot;</span>] ]
+
+      updateDim d [mt,mb,bt,bb,pt,pb] <span class="fu">=</span>
+          <span class="kw">let</span> pad <span class="fu">=</span> padding d
+              mar <span class="fu">=</span> margin d
+              bor <span class="fu">=</span> border d
+              x' <span class="fu">=</span> x contBlock
+                 <span class="fu">+</span> left (margin d)
+                 <span class="fu">+</span> left (border d)
+                 <span class="fu">+</span> left (padding d)
+              y' <span class="fu">=</span> y contBlock <span class="fu">+</span> height contBlock <span class="fu">+</span> pt <span class="fu">+</span> bt <span class="fu">+</span> mt
+           <span class="kw">in</span> d{ x <span class="fu">=</span> x'
+               , y <span class="fu">=</span> y'
+               , padding <span class="fu">=</span> pad{ top <span class="fu">=</span> pt, bottom <span class="fu">=</span> pb }
+               , border  <span class="fu">=</span> bor{ top <span class="fu">=</span> bt, bottom <span class="fu">=</span> bb }
+               , margin  <span class="fu">=</span> mar{ top <span class="fu">=</span> mt, bottom <span class="fu">=</span> mb } }
+
+    return <span class="fu">$</span> <span class="dt">NTree</span> (updateDim dim vals,a) b
+
+
+<span class="co">-- recursively lay out the children of a node</span>
+layoutChildren (<span class="dt">NTree</span> (dim,x) cs) <span class="fu">=</span> <span class="kw">do</span>
+    (dim',cs') <span class="ot">&lt;-</span> foldM foo (dim,[]) cs
+    return <span class="fu">$</span> <span class="dt">NTree</span> (dim',x) cs'
+
+    <span class="kw">where</span>
+        foo (d,acc) c<span class="fu">@</span>(<span class="dt">NTree</span> (cdim,_) _) <span class="fu">=</span> <span class="kw">do</span>
+            c' <span class="ot">&lt;-</span> layout c d
+            return (d{height <span class="fu">=</span> height d <span class="fu">+</span> marginBoxHeight cdim}, acc <span class="fu">++</span> [c'])
+
+
+<span class="co">-- compute the hight of a box</span>
+<span class="ot">calcHeight ::</span> <span class="dt">LayoutBox</span> <span class="ot">-&gt;</span> <span class="dt">Either</span> <span class="dt">T.Text</span> <span class="dt">LayoutBox</span>
+calcHeight root<span class="fu">@</span>(<span class="dt">NTree</span> (d,x)y) <span class="fu">=</span> <span class="kw">do</span>
+    s <span class="ot">&lt;-</span> getStyledElem root
+    <span class="kw">let</span> d' <span class="fu">=</span> <span class="kw">case</span> value s <span class="st">&quot;height&quot;</span> <span class="kw">of</span>
+             <span class="dt">Just</span> (<span class="dt">Length</span> h <span class="dt">Px</span>)  <span class="ot">-&gt;</span> d{height<span class="fu">=</span>h}
+             <span class="dt">Nothing</span>             <span class="ot">-&gt;</span> d
+    return <span class="fu">$</span> <span class="dt">NTree</span> (d',x) y
+
+
+<span class="ot">marginBoxHeight ::</span> <span class="dt">Dimensions</span> <span class="ot">-&gt;</span> <span class="dt">Float</span>
+marginBoxHeight (<span class="dt">Dimensions</span> _ _ _ h p b m) <span class="fu">=</span> sum [ h, top p, bottom p
+                                                 , top b, bottom b
+                                                 , top m, bottom m ]</code></pre>
+<p>Worth noting here is that the <code>updateDim</code> function in both <code>calcWidth</code> and <code>calcPosition</code> could be be rewritten using lenses. The <a href="http://hackage.haskell.org/package/lens">Lens</a> library pulls in a ton of dependencies though, so for the moment I won’t be using it (I will probably eventually though, so if you’re following along feel free to start using them whenever); but deeply nested data structures like we’re using will usually be easier to work with if you’re willing to learn how to use lenses.</p>
+<p>It’s also worth pointing out that this isn’t really the ideal Haskell way to construct the tree, which would generally be to build our tree of boxes and a separate tree of dimensions, then zip them together. This would indeed be simpler to write, but unfortunately the spec allows inline boxes to modify their children to avoid overflowing their own bounding box. Since we’re mostly sticking to Robinson’s implementation I want to wait until I see if this behavior is ignored there.</p>
+<p>With that said, we’ve now caught up with Matt’s blog posts and I’m not particularly interested in slowing down, so for the next post I will be going back and making previous modules more comprehensive.</p>
+<p>As usual, you can find the source for this post <a href="https://github.com/Hrothen/Hubert/blob/master/src/Layout.hs">here</a> and the source for Robinson <a href="https://github.com/mbrubeck/robinson">here</a>.</p>
+    
+    <nav id="postNav">
+        
+            <a href="../posts/lets-build-a-browser-engine-in-haskell-part-6.html" style="float:left;">Previous post</a>
+        
+        
+            <a href="../posts/lets-build-a-browser-engine-in-haskell-part-4.html" style="float:right; text-align: right;">Next post</a>
+        
+    </nav>
+</article>
+        </div>
+        <footer>
+            <div style="float: left; text-align: left;">
+                &copy;Leif Grele
+                <br>
+                github.com/hrothen
+            </div>
+            <div>
+                Site proudly generated by
+                <a href="http://jaspervdj.be/hakyll">Hakyll</a>
+            </div>
+        </footer>
+    </body>
+</html>

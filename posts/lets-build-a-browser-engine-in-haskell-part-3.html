@@ -1,0 +1,237 @@
+<?xml version="1.0" encoding="UTF-8" ?>
+<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd">
+<html xmlns="http://www.w3.org/1999/xhtml" xml:lang="en" lang="en">
+    <head>
+        <meta http-equiv="Content-Type" content="text/html; charset=UTF-8" />
+        <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+        <title>Also Sprach Leif - Let's Build a Browser Engine in Haskell: part 3</title>
+        <link rel="stylesheet" type="text/css" href="../css/default.css" />
+    </head>
+    <body>
+        <header>
+            <div id="logo">
+                <a href="../">Also Sprach Leif</a>
+            </div>
+            <nav>
+                <a href="../">Home</a>
+                <a href="../about.html">About</a>
+                <a href="../archive.html">Archive</a>
+                <a href="../atom.xml">Feed</a>
+            </nav>
+            <div id="tagline">
+                Math, Programming, Games, and whatever else I feel like
+            </div>
+        </header>
+
+        <div id="content">
+            <h1>Let's Build a Browser Engine in Haskell: part 3</h1>
+
+            <article>
+    <div class="info">
+        Posted on September 19, 2014
+        
+    </div>
+    
+    <p>Now that we’ve got some <a href="lets-build-a-browser-engine-in-haskell-setting-up-tests.html">tests set up</a>, we’re ready to write a CSS parser. But first, I’d like to take a minute to talk about <code>Control.Applicative</code> and some of the combinators it contains. Applicative combinators are really useful for building parsers, but tend to look a lot like voodoo when presented without explanation. We’ve already used <code>Parsec</code>’s <code>&lt;|&gt;</code> combinator, which tries the parser on its left, and then the one on its right if the first fails. In writing our CSS parser, we’ll also use the following operators:</p>
+<ul>
+<li><code>&lt;$&gt;</code> is an operator synonym for <code>fmap</code>.</li>
+<li><code>*&gt;</code> performs the action on it’s left, and then the action on its right, ignoring the result of the first action. It is equivalent to <code>&gt;&gt;</code> on monads.</li>
+<li><code>&lt;*</code> performs the action on its left, then the action on its right, and returns the result of the first action. It is equivalent to the monadic expression <code>do{ f &lt;- foo; bar; return f}</code>.</li>
+<li><code>&lt;*&gt;</code> takes a binary function inside an <code>Applicative</code> on its left, and an argument to that function, also inside an <code>Applicative</code> on the right.</li>
+</ul>
+<p>We mostly use <code>*&gt;</code> and <code>&lt;*</code> for parsers where we need to parse something but don’t care about holding on to it, like trailing whitespace, or separators. <code>&lt;$&gt;</code> and <code>&lt;*&gt;</code> are useful for collecting the results of multiple parsers, for some type <code>Foo</code> we can write <code>Foo &lt;$&gt; bar &lt;*&gt; baz &lt;*&gt; quux</code> instead of</p>
+<pre class="sourceCode haskell"><code class="sourceCode haskell">a <span class="ot">&lt;-</span> bar
+b <span class="ot">&lt;-</span> baz
+c <span class="ot">&lt;-</span> quux
+return <span class="fu">$</span> <span class="dt">Foo</span> a b c</code></pre>
+<p>We could also write that as <code>LiftA3 Foo bar baz quux</code>.</p>
+<p>Everyone has trouble with <code>Applicative</code> stuff for a while (it doesn’t help that they make it <em>really</em> easy to write illegible code), so don’t feel bad if you don’t really get it right now.</p>
+<p>We’re now ready to start on the parser. First, the module definition and imports:</p>
+<pre class="sourceCode haskell"><code class="sourceCode haskell"><span class="ot">{-# LANGUAGE FlexibleContexts, NoMonomorphismRestriction #-}</span>
+<span class="kw">module</span> <span class="dt">CSS</span>
+    ( <span class="dt">Stylesheet</span>(<span class="fu">..</span>)
+    , <span class="dt">Rule</span>(<span class="fu">..</span>)
+    , <span class="dt">Selector</span>(<span class="fu">..</span>)
+    , <span class="dt">Declaration</span>(<span class="fu">..</span>)
+    , <span class="dt">Value</span>(<span class="fu">..</span>)
+    , <span class="dt">Unit</span>(<span class="fu">..</span>)
+    , parseCSS
+    , selectors
+    , declarations
+    ) <span class="kw">where</span>
+
+<span class="kw">import </span><span class="dt">Prelude</span> <span class="kw">hiding</span> (id)
+
+<span class="kw">import </span><span class="dt">Data.Word</span> (<span class="dt">Word</span>(..), <span class="dt">Word8</span>(..))
+<span class="kw">import </span><span class="dt">Data.List</span> (sortBy)
+<span class="kw">import </span><span class="dt">Data.Maybe</span> (maybe)
+<span class="kw">import </span><span class="dt">Numeric</span> (readFloat, readHex)
+<span class="kw">import </span><span class="dt">Control.Applicative</span> ((&lt;*), (*&gt;), (&lt;$&gt;), (&lt;*&gt;))
+
+<span class="kw">import </span><span class="dt">Text.Parsec</span>
+<span class="kw">import </span><span class="dt">Text.Parsec.Text</span>
+
+<span class="kw">import qualified</span> <span class="dt">Data.Text</span> <span class="kw">as</span> <span class="dt">T</span></code></pre>
+<p>We’ll create some simple types to represent our CSS:</p>
+<pre class="sourceCode haskell"><code class="sourceCode haskell"><span class="kw">data</span> <span class="dt">Stylesheet</span> <span class="fu">=</span> <span class="dt">Stylesheet</span> [<span class="dt">Rule</span>]
+  <span class="kw">deriving</span> (<span class="dt">Show</span>, <span class="dt">Eq</span>)
+
+<span class="kw">data</span> <span class="dt">Rule</span> <span class="fu">=</span> <span class="dt">Rule</span> [<span class="dt">Selector</span>] [<span class="dt">Declaration</span>]
+  <span class="kw">deriving</span> (<span class="dt">Show</span>, <span class="dt">Eq</span>)
+
+<span class="co">-- only handle simple selectors for now</span>
+<span class="kw">data</span> <span class="dt">Selector</span> <span class="fu">=</span> <span class="dt">Simple</span> (<span class="dt">Maybe</span> <span class="dt">T.Text</span>) (<span class="dt">Maybe</span> <span class="dt">T.Text</span>) [<span class="dt">T.Text</span>]
+  <span class="kw">deriving</span> (<span class="dt">Show</span>, <span class="dt">Eq</span>)
+
+<span class="kw">data</span> <span class="dt">Declaration</span> <span class="fu">=</span> <span class="dt">Declaration</span> <span class="dt">T.Text</span> <span class="dt">Value</span>
+  <span class="kw">deriving</span> (<span class="dt">Show</span>, <span class="dt">Eq</span>)
+
+<span class="kw">data</span> <span class="dt">Value</span> <span class="fu">=</span> <span class="dt">Keyword</span> <span class="dt">T.Text</span>
+           <span class="fu">|</span> <span class="dt">Color</span> <span class="dt">Word8</span> <span class="dt">Word8</span> <span class="dt">Word8</span> <span class="dt">Word8</span>
+           <span class="fu">|</span> <span class="dt">Length</span> <span class="dt">Float</span> <span class="dt">Unit</span>
+  <span class="kw">deriving</span> (<span class="dt">Show</span>, <span class="dt">Eq</span>)
+
+<span class="kw">data</span> <span class="dt">Unit</span> <span class="fu">=</span> <span class="dt">Px</span> <span class="co">--only Px for now</span>
+  <span class="kw">deriving</span> (<span class="dt">Show</span>, <span class="dt">Eq</span>)
+
+<span class="co">-- an empty selector</span>
+nilS <span class="fu">=</span> <span class="dt">Simple</span> <span class="dt">Nothing</span> <span class="dt">Nothing</span> []</code></pre>
+<p>Note that because we don’t want to move too far away from how Robinson works, we’re actually going to be parsing only CSS2 simple selectors instead of following the more complicated CSS3 spec, for now.</p>
+<p>The top level parser looks remarkably familiar</p>
+<pre class="sourceCode haskell"><code class="sourceCode haskell"><span class="co">-- parse an entire CSS document into a Stylesheet</span>
+<span class="ot">parseCSS ::</span> <span class="dt">T.Text</span> <span class="ot">-&gt;</span> <span class="dt">Either</span> <span class="dt">ParseError</span> <span class="dt">Stylesheet</span>
+parseCSS css <span class="fu">=</span> <span class="kw">case</span> runParser rules nilS <span class="st">&quot;&quot;</span> css <span class="kw">of</span>
+    <span class="dt">Left</span> err <span class="ot">-&gt;</span> <span class="dt">Left</span> err
+    <span class="dt">Right</span> rs <span class="ot">-&gt;</span> <span class="dt">Right</span> (<span class="dt">Stylesheet</span> rs)
+
+rules <span class="fu">=</span> spaces <span class="fu">&gt;&gt;</span> manyTill (rule <span class="fu">&lt;*</span> spaces) eof</code></pre>
+<p>A <code>Rule</code> is just a list of <code>Selector</code>s, and a list of <code>Declaration</code>s</p>
+<pre class="sourceCode haskell"><code class="sourceCode haskell">rule <span class="fu">=</span> <span class="dt">Rule</span> <span class="fu">&lt;$&gt;</span> selectors <span class="fu">&lt;*&gt;</span> declarations</code></pre>
+<p>Selectors are in a comma separated list</p>
+<pre class="sourceCode haskell"><code class="sourceCode haskell">selectors <span class="fu">=</span> (sortBy comp) <span class="fu">&lt;$&gt;</span> sepBy1 (selector <span class="fu">&lt;*</span> spaces) comma
+  <span class="kw">where</span> comma <span class="fu">=</span> char <span class="ch">','</span> <span class="fu">&lt;*</span> spaces
+        comp a b <span class="fu">=</span> spec a <span class="ot">`compare`</span> spec b</code></pre>
+<p>We sort the parsed selectors by their specificity</p>
+<pre class="sourceCode haskell"><code class="sourceCode haskell"><span class="kw">type</span> <span class="dt">Specificity</span> <span class="fu">=</span> (<span class="dt">Word</span>,<span class="dt">Word</span>,<span class="dt">Word</span>)
+
+<span class="co">-- compute the specificity of a Selector</span>
+<span class="ot">spec ::</span> <span class="dt">Selector</span> <span class="ot">-&gt;</span> <span class="dt">Specificity</span>
+spec (<span class="dt">Simple</span> name id cls) <span class="fu">=</span> (maybeLen id, fromIntegral <span class="fu">$</span> length cls, maybeLen name)
+  <span class="kw">where</span> maybeLen <span class="fu">=</span> fromIntegral <span class="fu">.</span> maybe <span class="dv">0</span> T.length</code></pre>
+<p>In order to actually build the <code>Selector</code>, we’ll take advantage of the fact that the <code>Parsec</code> monad transformer includes a <code>StateT</code> for user state.</p>
+<pre class="sourceCode haskell"><code class="sourceCode haskell"><span class="co">-- manyTill, but the terminal parser is optional</span>
+manyUnless p end <span class="fu">=</span> many ((notFollowedBy end) <span class="fu">*&gt;</span> p)
+
+<span class="co">-- parse a simple selector</span>
+selector <span class="fu">=</span> <span class="kw">do</span>
+    putState nilS
+    manyUnless (id <span class="fu">&lt;|&gt;</span> cls <span class="fu">&lt;|&gt;</span> univ <span class="fu">&lt;|&gt;</span> name) eof
+    getState
+
+
+<span class="co">-- selector id</span>
+id <span class="fu">=</span> <span class="kw">do</span>
+    char <span class="ch">'#'</span>
+    i <span class="ot">&lt;-</span> identifier
+    modifyState (\(<span class="dt">Simple</span> n _ cs) <span class="ot">-&gt;</span> <span class="dt">Simple</span> n (<span class="dt">Just</span> i) cs)
+
+<span class="co">-- selector class</span>
+cls <span class="fu">=</span> <span class="kw">do</span>
+    char <span class="ch">'.'</span>
+    c <span class="ot">&lt;-</span> identifier
+    modifyState (\(<span class="dt">Simple</span> n i cs) <span class="ot">-&gt;</span> <span class="dt">Simple</span> n i (cs<span class="fu">++</span>[c]))
+
+<span class="co">-- universal selector</span>
+univ <span class="fu">=</span> char <span class="ch">'*'</span> <span class="fu">&gt;&gt;</span> return ()
+
+<span class="co">-- selector name</span>
+name <span class="fu">=</span> <span class="kw">do</span>
+    n' <span class="ot">&lt;-</span> validId
+    n  <span class="ot">&lt;-</span> identifier
+    <span class="kw">let</span> nm <span class="fu">=</span> n' <span class="ot">`T.cons`</span> n
+    modifyState (\(<span class="dt">Simple</span> _ i cs) <span class="ot">-&gt;</span> <span class="dt">Simple</span> (<span class="dt">Just</span> nm) i cs)</code></pre>
+<p>Declarations are parsed from a semicolon separated list bracketed by curly braces.</p>
+<pre class="sourceCode haskell"><code class="sourceCode haskell">declarations <span class="fu">=</span> <span class="kw">do</span>
+    char <span class="ch">'{'</span>
+    spaces <span class="fu">*&gt;</span> manyTill (declaration <span class="fu">&lt;*</span> spaces) (char <span class="ch">'}'</span>)
+
+
+declaration <span class="fu">=</span> <span class="kw">do</span>
+    n <span class="ot">&lt;-</span> identifier
+    spaces <span class="fu">&gt;&gt;</span> char <span class="ch">':'</span> <span class="fu">&gt;&gt;</span> spaces
+    v <span class="ot">&lt;-</span> value
+    spaces <span class="fu">&gt;&gt;</span> char <span class="ch">';'</span>
+    return <span class="fu">$</span> <span class="dt">Declaration</span> n v
+
+value <span class="fu">=</span> len <span class="fu">&lt;|&gt;</span> color <span class="fu">&lt;|&gt;</span> keyword
+
+len <span class="fu">=</span> <span class="dt">Length</span> <span class="fu">&lt;$&gt;</span> float <span class="fu">&lt;*&gt;</span> unit
+
+<span class="co">-- parse a floating point number</span>
+<span class="ot">float ::</span> <span class="dt">Stream</span> s m <span class="dt">Char</span> <span class="ot">=&gt;</span> <span class="dt">ParsecT</span> s u m <span class="dt">Float</span>
+float <span class="fu">=</span> (fst <span class="fu">.</span> head <span class="fu">.</span> readFloat) <span class="fu">&lt;$&gt;</span> many (digit <span class="fu">&lt;|&gt;</span> (char <span class="ch">'.'</span>))
+
+<span class="co">-- parse the unit type in a Value</span>
+<span class="co">-- currently only Px is supported</span>
+unit <span class="fu">=</span> <span class="kw">do</span>
+    char <span class="ch">'p'</span> <span class="fu">&lt;|&gt;</span> char <span class="ch">'P'</span>
+    char <span class="ch">'x'</span> <span class="fu">&lt;|&gt;</span> char <span class="ch">'X'</span>
+    return <span class="dt">Px</span>
+
+
+color <span class="fu">=</span> <span class="kw">do</span>
+    char <span class="ch">'#'</span>
+    cs <span class="ot">&lt;-</span> count <span class="dv">3</span> (count <span class="dv">2</span> hexDigit)
+    <span class="kw">let</span> [r,g,b] <span class="fu">=</span> map (fst <span class="fu">.</span> head <span class="fu">.</span> readHex) cs
+    return <span class="fu">$</span> <span class="dt">Color</span> r g b <span class="dv">255</span>
+
+keyword <span class="fu">=</span> <span class="dt">Keyword</span> <span class="fu">&lt;$&gt;</span> identifier
+
+identifier <span class="fu">=</span> T.pack <span class="fu">&lt;$&gt;</span> many validId
+
+validId <span class="fu">=</span> alphaNum <span class="fu">&lt;|&gt;</span> char <span class="ch">'-'</span> <span class="fu">&lt;|&gt;</span> char <span class="ch">'_'</span></code></pre>
+<p>For some reason Parsec doesn’t have built in number parsers, so we have to fall back to the read functions from <code>Numeric</code></p>
+<p>That’s the whole CSS parser, let’s add a test for it</p>
+<pre class="sourceCode haskell"><code class="sourceCode haskell">css <span class="fu">=</span> <span class="st">&quot;h1, h2, h3 { margin: auto; color: #cc0000; }\n\</span>
+<span class="st">      \div.note { margin-bottom: 20px; padding: 10px; }\n\</span>
+<span class="st">      \#answer { display: none; }&quot;</span>
+
+sheet <span class="fu">=</span> <span class="dt">Stylesheet</span> [ <span class="dt">Rule</span> [ <span class="dt">Simple</span> (<span class="dt">Just</span> <span class="st">&quot;h1&quot;</span>) <span class="dt">Nothing</span> []
+                          , <span class="dt">Simple</span> (<span class="dt">Just</span> <span class="st">&quot;h2&quot;</span>) <span class="dt">Nothing</span> []
+                          , <span class="dt">Simple</span> (<span class="dt">Just</span> <span class="st">&quot;h3&quot;</span>) <span class="dt">Nothing</span> [] ]
+                          [ <span class="dt">Declaration</span> <span class="st">&quot;margin&quot;</span> (<span class="dt">Keyword</span> <span class="st">&quot;auto&quot;</span>)
+                          , <span class="dt">Declaration</span> <span class="st">&quot;color&quot;</span>  (<span class="dt">Color</span> <span class="dv">204</span> <span class="dv">0</span> <span class="dv">0</span> <span class="dv">255</span>) ]
+                   , <span class="dt">Rule</span> [ <span class="dt">Simple</span> (<span class="dt">Just</span> <span class="st">&quot;div&quot;</span>) <span class="dt">Nothing</span> [<span class="st">&quot;note&quot;</span>] ]
+                          [ <span class="dt">Declaration</span> <span class="st">&quot;margin-bottom&quot;</span> (<span class="dt">Length</span> <span class="dv">20</span> <span class="dt">Px</span>)
+                          , <span class="dt">Declaration</span> <span class="st">&quot;padding&quot;</span> (<span class="dt">Length</span> <span class="dv">10</span> <span class="dt">Px</span>) ]
+                   , <span class="dt">Rule</span> [ <span class="dt">Simple</span> <span class="dt">Nothing</span> (<span class="dt">Just</span> <span class="st">&quot;answer&quot;</span>) [] ]
+                          [ <span class="dt">Declaration</span> <span class="st">&quot;display&quot;</span> (<span class="dt">Keyword</span> <span class="st">&quot;none&quot;</span>) ] ]
+
+testCss <span class="fu">=</span> parseTest <span class="st">&quot;for valid css&quot;</span> sheet <span class="fu">$</span> parseCSS css</code></pre>
+<p>And if I’ve copied everything here correctly, that test will pass.</p>
+<p>That’s all for CSS parsing, next time we’ll work on combining the Dom and Stylesheet into a single Layout.</p>
+<p>As usual, you can find the source for this post <a href="https://github.com/Hrothen/Hubert/blob/master/src/Css.hs">here</a> and the source for Robinson <a href="https://github.com/mbrubeck/robinson">here</a>.</p>
+    
+    <nav id="postNav">
+        
+            <a href="../posts/lets-build-a-browser-engine-in-haskell-part-4.html" style="float:left;">Previous post</a>
+        
+        
+            <a href="../posts/lets-build-a-browser-engine-in-haskell-setting-up-tests.html" style="float:right; text-align: right;">Next post</a>
+        
+    </nav>
+</article>
+        </div>
+        <footer>
+            <div style="float: left; text-align: left;">
+                &copy;Leif Grele
+                <br>
+                github.com/hrothen
+            </div>
+            <div>
+                Site proudly generated by
+                <a href="http://jaspervdj.be/hakyll">Hakyll</a>
+            </div>
+        </footer>
+    </body>
+</html>

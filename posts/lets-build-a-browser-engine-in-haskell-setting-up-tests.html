@@ -1,0 +1,223 @@
+<?xml version="1.0" encoding="UTF-8" ?>
+<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd">
+<html xmlns="http://www.w3.org/1999/xhtml" xml:lang="en" lang="en">
+    <head>
+        <meta http-equiv="Content-Type" content="text/html; charset=UTF-8" />
+        <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+        <title>Also Sprach Leif - Let's Build a Browser Engine in Haskell: setting up tests</title>
+        <link rel="stylesheet" type="text/css" href="../css/default.css" />
+    </head>
+    <body>
+        <header>
+            <div id="logo">
+                <a href="../">Also Sprach Leif</a>
+            </div>
+            <nav>
+                <a href="../">Home</a>
+                <a href="../about.html">About</a>
+                <a href="../archive.html">Archive</a>
+                <a href="../atom.xml">Feed</a>
+            </nav>
+            <div id="tagline">
+                Math, Programming, Games, and whatever else I feel like
+            </div>
+        </header>
+
+        <div id="content">
+            <h1>Let's Build a Browser Engine in Haskell: setting up tests</h1>
+
+            <article>
+    <div class="info">
+        Posted on September 14, 2014
+        
+    </div>
+    
+    <p>Welcome back. In <a href="lets-build-a-browser-engine-in-haskell-part-2.html">part 2</a> we wrote an html parser two different ways, and decided to implement some tests before going any further. Let’s do that now.</p>
+<h1 id="setting-up-some-simple-tests">Setting up some simple tests</h1>
+<p>We’ll create a file <code>tests.hs</code> in a new folder <code>/tests</code>, to keep our test code separate. We’ll be using the <a href="http://hackage.haskell.org/package/HUnit">HUnit</a> test framework, which is included in the Haskell Platform. As usual, we’ll start off with the imports:</p>
+<pre class="sourceCode haskell"><code class="sourceCode haskell"><span class="ot">{-# LANGUAGE OverloadedStrings #-}</span>
+<span class="kw">module</span> <span class="dt">Main</span> <span class="kw">where</span>
+
+<span class="kw">import </span><span class="dt">Prelude</span> <span class="kw">hiding</span> (elem)
+<span class="kw">import </span><span class="dt">Data.Either</span> (either)
+
+<span class="kw">import </span><span class="dt">Test.HUnit</span>
+
+<span class="kw">import </span><span class="dt">Text.Parsec</span> <span class="kw">hiding</span> (parseTest)
+<span class="kw">import </span><span class="dt">Text.Parsec.Text</span>
+
+
+<span class="kw">import qualified</span> <span class="dt">Data.Text</span> <span class="kw">as</span> <span class="dt">T</span>
+<span class="kw">import qualified</span> <span class="dt">Data.HashMap.Strict</span> <span class="kw">as</span> <span class="dt">HM</span>
+
+<span class="kw">import qualified</span> <span class="dt">HTML.Parser</span> <span class="kw">as</span> <span class="dt">PR</span>
+<span class="kw">import qualified</span> <span class="dt">HTML.Parsec</span> <span class="kw">as</span> <span class="dt">PS</span>
+<span class="kw">import </span><span class="dt">Dom</span></code></pre>
+<p>We’ll be running the same tests for both the <code>ParserS</code> and <code>Parsec</code> html parsers, but after this we’re pretty much going to ignore the <code>ParserS</code> one, the <code>Parsec</code> parser will be much easier to extend if we want to add features.</p>
+<p>We’ll start with some simple data to test against:</p>
+<pre class="sourceCode haskell"><code class="sourceCode haskell">testText <span class="fu">=</span> text <span class="st">&quot;candygram&quot;</span>
+testElem <span class="fu">=</span> elem <span class="st">&quot;p&quot;</span> (HM.singleton <span class="st">&quot;ham&quot;</span> <span class="st">&quot;doctor&quot;</span>) [text <span class="st">&quot;sup&quot;</span>]
+
+<span class="co">-- a small test html page</span>
+<span class="co">-- yeah, multi-line strings in haskell kind of suck</span>
+html <span class="fu">=</span> <span class="st">&quot;&lt;html&gt;\n\</span>
+<span class="st">       \    &lt;head&gt;\n\</span>
+<span class="st">       \        &lt;title&gt;Test&lt;/title&gt;\n\</span>
+<span class="st">       \    &lt;/head&gt;\n\</span>
+<span class="st">       \    &lt;p class=\&quot;inner\&quot;&gt;\n\</span>
+<span class="st">       \        Hello, &lt;span id=\&quot;name\&quot;&gt;world!&lt;/span&gt;\n\</span>
+<span class="st">       \    &lt;/p&gt;\n\</span>
+<span class="st">       \    &lt;p class=\&quot;inner\&quot;&gt;\n\</span>
+<span class="st">       \        Goodbye!\n\</span>
+<span class="st">       \    &lt;/p&gt;\n\</span>
+<span class="st">       \&lt;/html&gt;&quot;</span>
+
+<span class="co">-- the expected result of parsing the test page</span>
+dom <span class="fu">=</span> elem <span class="st">&quot;html&quot;</span> HM.empty [head,p1,p2]
+  <span class="kw">where</span>
+    head  <span class="fu">=</span> elem <span class="st">&quot;head&quot;</span>  HM.empty [title]
+    title <span class="fu">=</span> elem <span class="st">&quot;title&quot;</span> HM.empty [text <span class="st">&quot;Test&quot;</span>]
+    p1    <span class="fu">=</span> elem <span class="st">&quot;p&quot;</span>    (HM.singleton <span class="st">&quot;class&quot;</span> <span class="st">&quot;inner&quot;</span>) [hello, span]
+    hello <span class="fu">=</span> text <span class="st">&quot;Hello, &quot;</span>
+    span  <span class="fu">=</span> elem <span class="st">&quot;span&quot;</span> (HM.singleton <span class="st">&quot;id&quot;</span> <span class="st">&quot;name&quot;</span>) [text <span class="st">&quot;world&quot;</span>]
+    p2    <span class="fu">=</span> elem <span class="st">&quot;p&quot;</span>    (HM.singleton <span class="st">&quot;class&quot;</span> <span class="st">&quot;inner&quot;</span>) [text <span class="st">&quot;Goodbye!&quot;</span>]</code></pre>
+<p>For each test, we want to check both that the parser succeeded, and that it returned the correct value, so we’ll define a little helper function for that:</p>
+<pre class="sourceCode haskell"><code class="sourceCode haskell"><span class="co">-- generic test: given an expected value and an actual value, check that the actual</span>
+<span class="co">-- value is not an error message, then compare it to the expected value</span>
+parseTest msg e <span class="fu">=</span> <span class="dt">TestCase</span> <span class="fu">.</span> either (assertFailure <span class="fu">.</span> show) (assertEqual msg e)</code></pre>
+<p>The first argument to <code>parseTest</code> is a message that will be associated with that test by the runner, if we don’t get a successful parse the runner will instead show the parser’s error message.</p>
+<p>The tests for <code>ParserS</code> and <code>Parsec</code> are identical aside from the function used to run the parser, and needing to pack the strings for <code>Parsec</code>:</p>
+<pre class="sourceCode haskell"><code class="sourceCode haskell"><span class="fu">---------------------------</span> <span class="dt">PARSER_S</span> <span class="dt">TESTS</span> <span class="fu">------------------------------</span>
+
+parsePR p i <span class="fu">=</span> PR.runParserS p (<span class="dt">PR.Parser</span> i)
+
+htmlPR <span class="fu">=</span> parseTest <span class="st">&quot;for valid html&quot;</span> dom <span class="fu">$</span> PR.parseHtml html
+
+
+textPR <span class="fu">=</span> parseTest <span class="st">&quot;for valid text&quot;</span> testText <span class="fu">$</span> parsePR PR.parseText <span class="st">&quot;candygram&quot;</span>
+
+
+elemPR <span class="fu">=</span> parseTest <span class="st">&quot;for valid elem&quot;</span> testElem <span class="fu">$</span>
+                   parsePR PR.parseElement <span class="st">&quot;&lt;p ham=\&quot;doctor\&quot;&gt;sup&lt;/p&gt;&quot;</span>
+
+
+<span class="fu">----------------------------</span> <span class="dt">PARSEC</span> <span class="dt">TESTS</span> <span class="fu">------------------------------</span>
+
+
+htmlPS <span class="fu">=</span> parseTest <span class="st">&quot;for valid html&quot;</span> dom <span class="fu">$</span> PS.parseHtml html
+
+
+textPS <span class="fu">=</span> parseTest <span class="st">&quot;for valid text&quot;</span> testText <span class="fu">$</span>
+                    parse PS.parseText <span class="st">&quot;&quot;</span> <span class="fu">$</span> T.pack <span class="st">&quot;candygram&quot;</span>
+
+
+elemPS <span class="fu">=</span> parseTest <span class="st">&quot;for valid elem&quot;</span> testElem <span class="fu">$</span>
+                    parse PS.parseElement <span class="st">&quot;&quot;</span> <span class="fu">$</span> T.pack <span class="st">&quot;&lt;p ham=\&quot;doctor\&quot;&gt;sup&lt;/p&gt;&quot;</span></code></pre>
+<p>Finally we’ll group the tests up, and run them:</p>
+<pre class="sourceCode haskell"><code class="sourceCode haskell">main <span class="fu">=</span> runTestTT tests
+
+tests <span class="fu">=</span> <span class="dt">TestList</span> [<span class="dt">TestLabel</span> <span class="st">&quot;ParserS html&quot;</span> htmlPR,
+                  <span class="dt">TestLabel</span> <span class="st">&quot;ParserS text&quot;</span> textPR,
+                  <span class="dt">TestLabel</span> <span class="st">&quot;ParserS elem&quot;</span> elemPR,
+                  <span class="dt">TestLabel</span> <span class="st">&quot;Parsec html&quot;</span>  htmlPS,
+                  <span class="dt">TestLabel</span> <span class="st">&quot;Parsec text&quot;</span>  textPS,
+                  <span class="dt">TestLabel</span> <span class="st">&quot;Parsec elem&quot;</span>  elemPS]</code></pre>
+<p>You can run these tests in GHCi with the command <code>runTestTT tests</code> (or just compile tests.hs outright) but if you’re being responsible and using a .cabal file + sandbox like I am, you might want to add a test suite to the .cabal file.</p>
+<pre><code>Test-Suite hunit-tests
+  type:             exitcode-stdio-1.0
+  main-is:          tests.hs
+  other-modules:    Dom,
+                    HTML.Parser,
+                    HTML.Parsec
+  build-depends:    base &gt;= 4.7 &amp;&amp; &lt; 5,
+                    unordered-containers &gt;=0.2 &amp;&amp; &lt;0.3,
+                    mtl &gt;= 2.2.1,
+                    text &gt;= 1.1.0.0,
+                    HUnit &gt;= 1.2.5.0,
+                    parsec == 3.1.*
+  hs-source-dirs:   tests,
+                    src
+  default-language: Haskell2010</code></pre>
+<p>You can now compile your tests with</p>
+<pre><code>cabal configure --enable-tests
+cabal build
+cabal test</code></pre>
+<p>However, HUnit does not actually conform to the format expected by <code>exitcode-stdio-1.0</code> (which is amusing, since it’s supposed to be a backwards compatibility setting) so <code>cabal test</code> will <em>always</em> claim to have run all tests successfully. The real results will be printed to the logfile located in dist/test.</p>
+<pre><code>Test suite hunit-tests: RUNNING...
+
+Cases: 6  Tried: 0  Errors: 0  Failures: 0
+                                          
+### Failure in: 0:ParserS html
+
+for valid html
+
+expected: NTree (Element (ElementData &quot;html&quot; fromList [])) [NTree (Element (ElementData &quot;head&quot; fromList [])) [NTree (Element (ElementData &quot;title&quot; fromList [])) [NTree (Text &quot;Test&quot;) []]],NTree (Element (ElementData &quot;p&quot; fromList [(&quot;class&quot;,&quot;inner&quot;)])) [NTree (Text &quot;Hello, &quot;) [],NTree (Element (ElementData &quot;span&quot; fromList [(&quot;id&quot;,&quot;name&quot;)])) [NTree (Text &quot;world&quot;) []]],NTree (Element (ElementData &quot;p&quot; fromList [(&quot;class&quot;,&quot;inner&quot;)])) [NTree (Text &quot;Goodbye!&quot;) []]]
+
+ but got: NTree (Element (ElementData &quot;html&quot; fromList [])) [NTree (Text &quot;\n    &quot;) [],NTree (Element (ElementData &quot;head&quot; fromList [])) [NTree (Text &quot;\n        &quot;) [],NTree (Element (ElementData &quot;title&quot; fromList [])) [NTree (Text &quot;Test&quot;) []],NTree (Text &quot;\n    &quot;) []],NTree (Text &quot;\n    &quot;) [],NTree (Element (ElementData &quot;p&quot; fromList [(&quot;class&quot;,&quot;inner&quot;)])) [NTree (Text &quot;\n        Hello, &quot;) [],NTree (Element (ElementData &quot;span&quot; fromList [(&quot;id&quot;,&quot;name&quot;)])) [NTree (Text &quot;world!&quot;) []],NTree (Text &quot;\n    &quot;) []],NTree (Text &quot;\n    &quot;) [],NTree (Element (ElementData &quot;p&quot; fromList [(&quot;class&quot;,&quot;inner&quot;)])) [NTree (Text &quot;\n        Goodbye!\n    &quot;) []],NTree (Text &quot;\n&quot;) []]
+
+
+Cases: 6  Tried: 1  Errors: 0  Failures: 1
+Cases: 6  Tried: 2  Errors: 0  Failures: 1
+Cases: 6  Tried: 3  Errors: 0  Failures: 1
+                                          
+### Failure in: 3:Parsec html
+
+for valid html
+
+expected: NTree (Element (ElementData &quot;html&quot; fromList [])) [NTree (Element (ElementData &quot;head&quot; fromList [])) [NTree (Element (ElementData &quot;title&quot; fromList [])) [NTree (Text &quot;Test&quot;) []]],NTree (Element (ElementData &quot;p&quot; fromList [(&quot;class&quot;,&quot;inner&quot;)])) [NTree (Text &quot;Hello, &quot;) [],NTree (Element (ElementData &quot;span&quot; fromList [(&quot;id&quot;,&quot;name&quot;)])) [NTree (Text &quot;world&quot;) []]],NTree (Element (ElementData &quot;p&quot; fromList [(&quot;class&quot;,&quot;inner&quot;)])) [NTree (Text &quot;Goodbye!&quot;) []]]
+
+ but got: NTree (Element (ElementData &quot;html&quot; fromList [])) [NTree (Element (ElementData &quot;head&quot; fromList [])) [NTree (Element (ElementData &quot;title&quot; fromList [])) [NTree (Text &quot;Test&quot;) []]],NTree (Element (ElementData &quot;p&quot; fromList [(&quot;class&quot;,&quot;inner&quot;)])) [NTree (Text &quot;Hello, &quot;) [],NTree (Element (ElementData &quot;span&quot; fromList [(&quot;id&quot;,&quot;name&quot;)])) [NTree (Text &quot;world!&quot;) []]],NTree (Element (ElementData &quot;p&quot; fromList [(&quot;class&quot;,&quot;inner&quot;)])) [NTree (Text &quot;Goodbye!\n    &quot;) []]]
+
+
+Cases: 6  Tried: 4  Errors: 0  Failures: 2
+Cases: 6  Tried: 5  Errors: 0  Failures: 2
+                                          
+Cases: 6  Tried: 6  Errors: 0  Failures: 2
+
+Test suite hunit-tests: PASS
+Test suite logged to: dist\test\hubert-0.1.0.0-hunit-tests.log</code></pre>
+<p>Oh hey, looks like our tests have found a problem: <code>parseHtml</code> has failed for both parsers. Since our other tests have succeeded, we can guess that the issue is at the top level of the parser, and inspecting the output, we can see that indeed, the <code>ParserS</code> is parsing whitespace between nodes as text nodes. That should be easy to fix. Since <code>consumeWhitespace = consumeWhile (==' ')</code> is only consuming spaces, we’ll rewrite it as:</p>
+<pre class="sourceCode haskell"><code class="sourceCode haskell"><span class="ot">consumeWhitespace ::</span> <span class="dt">ParserS</span> <span class="dt">T.Text</span>
+consumeWhitespace <span class="fu">=</span> consumeWhile isSpace</code></pre>
+<p>While the <code>Parsec</code> parser is not having this problem, it actually will exhibit the same behavior for improper html files where there is no root node; because for reasons I can’t remember, <code>parseNodes</code> and <code>parseChildren</code> do different things. <code>parseChildren</code> is the proper implementation though, so we’ll just rename it to <code>parseNodes</code> and change every call to <code>parseChildren</code> to call <code>parseNodes</code>.</p>
+<p>We have a second issue, which is affecting both parsers: the parser is returning a text element of <code>&quot;Goodbye!\n    &quot;</code> instead of the expected <code>&quot;Goodbye!&quot;</code>. This is actually a mistake writing the test, the correct behavior is for the html parser to include the whitespace in the text element, and later algorithms can ignore it or not as they wish. I’ve also accidentally left off the ‘!’ at the end of <code>&quot;world&quot;</code>.</p>
+<p>With those changes, all tests now pass:</p>
+<pre><code>Test suite hunit-tests: RUNNING...
+
+Cases: 6  Tried: 0  Errors: 0  Failures: 0
+Cases: 6  Tried: 1  Errors: 0  Failures: 0
+Cases: 6  Tried: 2  Errors: 0  Failures: 0
+Cases: 6  Tried: 3  Errors: 0  Failures: 0
+Cases: 6  Tried: 4  Errors: 0  Failures: 0
+Cases: 6  Tried: 5  Errors: 0  Failures: 0
+                                          
+Cases: 6  Tried: 6  Errors: 0  Failures: 0
+
+Test suite hunit-tests: PASS
+Test suite logged to: dist\test\hubert-0.1.0.0-hunit-tests.log</code></pre>
+<p>With that, we can move on to parsing CSS. I had originally planned to cover CSS in this post, but I’d like to avoid huge posts like the previous one so we’ll end this here. Expect the next post fairly soon.</p>
+<p>As usual, you can find the source for this post <a href="https://github.com/Hrothen/Hubert/blob/master/tests/tests.hs">here</a> and the source for Robinson <a href="https://github.com/mbrubeck/robinson">here</a>.</p>
+    
+    <nav id="postNav">
+        
+            <a href="../posts/lets-build-a-browser-engine-in-haskell-part-3.html" style="float:left;">Previous post</a>
+        
+        
+            <a href="../posts/lets-build-a-browser-engine-in-haskell-part-2.html" style="float:right; text-align: right;">Next post</a>
+        
+    </nav>
+</article>
+        </div>
+        <footer>
+            <div style="float: left; text-align: left;">
+                &copy;Leif Grele
+                <br>
+                github.com/hrothen
+            </div>
+            <div>
+                Site proudly generated by
+                <a href="http://jaspervdj.be/hakyll">Hakyll</a>
+            </div>
+        </footer>
+    </body>
+</html>

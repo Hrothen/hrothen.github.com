@@ -1,0 +1,258 @@
+<?xml version="1.0" encoding="UTF-8" ?>
+<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd">
+<html xmlns="http://www.w3.org/1999/xhtml" xml:lang="en" lang="en">
+    <head>
+        <meta http-equiv="Content-Type" content="text/html; charset=UTF-8" />
+        <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+        <title>Also Sprach Leif - Let's Build a Browser Engine in Haskell: part 4</title>
+        <link rel="stylesheet" type="text/css" href="../css/default.css" />
+    </head>
+    <body>
+        <header>
+            <div id="logo">
+                <a href="../">Also Sprach Leif</a>
+            </div>
+            <nav>
+                <a href="../">Home</a>
+                <a href="../about.html">About</a>
+                <a href="../archive.html">Archive</a>
+                <a href="../atom.xml">Feed</a>
+            </nav>
+            <div id="tagline">
+                Math, Programming, Games, and whatever else I feel like
+            </div>
+        </header>
+
+        <div id="content">
+            <h1>Let's Build a Browser Engine in Haskell: part 4</h1>
+
+            <article>
+    <div class="info">
+        Posted on September 23, 2014
+        
+    </div>
+    
+    <p>Hey guys, since I’m trying to stick to the same content per post as Matt’s blog, this post will be pretty short.</p>
+<p>Today we’re going to implement styling of the DOM, wherein we combine a Stylesheet and a DOM tree to create a new DOM, with <code>Rule</code>s attached to its nodes.</p>
+<p>Our imports list is nice and small:</p>
+<pre class="sourceCode haskell"><code class="sourceCode haskell"><span class="kw">module</span> <span class="dt">Style</span> <span class="kw">where</span>
+
+<span class="kw">import </span><span class="dt">Data.Maybe</span> (mapMaybe)
+<span class="kw">import </span><span class="dt">Data.List</span> (sortBy,find)
+
+<span class="kw">import qualified</span> <span class="dt">Data.HashMap.Strict</span> <span class="kw">as</span> <span class="dt">HM</span>
+<span class="kw">import qualified</span> <span class="dt">Data.HashSet</span> <span class="kw">as</span> <span class="dt">HS</span>
+<span class="kw">import qualified</span> <span class="dt">Data.Text</span> <span class="kw">as</span> <span class="dt">T</span>
+
+<span class="kw">import </span><span class="dt">Dom</span>
+<span class="kw">import </span><span class="dt">CSS</span></code></pre>
+<p>We’ll some types, first a map from property names to values</p>
+<pre class="sourceCode haskell"><code class="sourceCode haskell"><span class="kw">type</span> <span class="dt">PropertyMap</span> <span class="fu">=</span> <span class="dt">HM.HashMap</span> <span class="dt">T.Text</span> <span class="dt">Value</span></code></pre>
+<p>Second, the styled tree itself, consisting of a <code>NodeType</code> and a <code>PropertyMap</code> for each node.</p>
+<pre class="sourceCode haskell"><code class="sourceCode haskell"><span class="co">-- instead of building a tree with references to the DOM, we'll</span>
+<span class="co">-- just augment the DOM tree with PropertyMaps</span>
+<span class="kw">type</span> <span class="dt">StyledNode</span> <span class="fu">=</span> <span class="dt">NTree</span> (<span class="dt">NodeType</span>,<span class="dt">PropertyMap</span>)</code></pre>
+<p>Actually styling the tree is just a map over the elements of our DOM (Later, when we add more CSS features like inheritance, it’ll become a fold instead). We’re using our own custom tree type, so we’ll need to add an instance of <code>Functor</code> back in <code>Dom.hs</code>. We’ll also add some accessors while we’re in there.</p>
+<pre class="sourceCode haskell"><code class="sourceCode haskell"><span class="kw">instance</span> <span class="dt">Functor</span> <span class="dt">NTree</span> <span class="kw">where</span>
+    fmap f (<span class="dt">NTree</span> n ns) <span class="fu">=</span> <span class="dt">NTree</span> (f n) <span class="fu">$</span> fmap (fmap f) ns
+
+<span class="ot">findAttr ::</span> <span class="dt">ElementData</span> <span class="ot">-&gt;</span> <span class="dt">T.Text</span> <span class="ot">-&gt;</span> <span class="dt">Maybe</span> <span class="dt">T.Text</span>
+findAttr (<span class="dt">ElementData</span> _ m) k <span class="fu">=</span> HM.lookup k m
+
+<span class="ot">findID ::</span> <span class="dt">ElementData</span> <span class="ot">-&gt;</span> <span class="dt">Maybe</span> <span class="dt">T.Text</span>
+findID <span class="fu">=</span> flip findAttr <span class="st">&quot;id&quot;</span>
+
+<span class="ot">classes ::</span> <span class="dt">ElementData</span> <span class="ot">-&gt;</span> <span class="dt">HashSet</span> <span class="dt">T.Text</span>
+classes <span class="fu">=</span> maybe empty (fromList <span class="fu">.</span> T.split (<span class="fu">==</span><span class="ch">' '</span>)) <span class="fu">.</span> flip findAttr <span class="st">&quot;class&quot;</span></code></pre>
+<p>And the styling function:</p>
+<pre class="sourceCode haskell"><code class="sourceCode haskell"><span class="co">-- traverse the DOM, attaching PropertyMaps to each Node to</span>
+<span class="co">-- create a styled tree</span>
+<span class="ot">styleTree ::</span> <span class="dt">Node</span> <span class="ot">-&gt;</span> <span class="dt">Stylesheet</span> <span class="ot">-&gt;</span> <span class="dt">StyledNode</span>
+styleTree root stylesheet <span class="fu">=</span> fmap style root
+  <span class="kw">where</span>
+    style e<span class="fu">@</span>(<span class="dt">Element</span> e') <span class="fu">=</span> (e, specifiedValues e' stylesheet)
+    style t<span class="fu">@</span>(<span class="dt">Text</span> _)     <span class="fu">=</span> (t, HM.empty)</code></pre>
+<p><code>SpecifiedValues</code> finds all the properties attached to an <code>Element</code> and collects them into a <code>PropertyMap</code></p>
+<pre class="sourceCode haskell"><code class="sourceCode haskell"><span class="co">-- Build a map of all the properties attached to an Element</span>
+<span class="ot">specifiedValues ::</span> <span class="dt">ElementData</span> <span class="ot">-&gt;</span> <span class="dt">Stylesheet</span> <span class="ot">-&gt;</span> <span class="dt">PropertyMap</span>
+specifiedValues e s <span class="fu">=</span> HM.fromList <span class="fu">$</span> concatMap expand rules
+  <span class="kw">where</span>
+    rules <span class="fu">=</span> sortBy (compare <span class="ot">`on`</span> fst) <span class="fu">$</span> matchingRules e s
+    expand (_,<span class="dt">Rule</span> _ ds) <span class="fu">=</span> map (\(<span class="dt">Declaration</span> n v) <span class="ot">-&gt;</span> (n,v)) ds
+
+
+<span class="kw">type</span> <span class="dt">MatchedRule</span> <span class="fu">=</span> (<span class="dt">Specificity</span>, <span class="dt">Rule</span>)
+
+<span class="co">-- get all of the rules from a stylesheet that match the given element</span>
+<span class="ot">matchingRules ::</span> <span class="dt">ElementData</span> <span class="ot">-&gt;</span> <span class="dt">Stylesheet</span> <span class="ot">-&gt;</span> [<span class="dt">MatchedRule</span>]
+matchingRules e (<span class="dt">Stylesheet</span> rules) <span class="fu">=</span> mapMaybe (matchRule e) rules
+
+<span class="co">-- find the first rule that matches the given element</span>
+<span class="ot">matchRule ::</span> <span class="dt">ElementData</span> <span class="ot">-&gt;</span> <span class="dt">Rule</span> <span class="ot">-&gt;</span> <span class="dt">Maybe</span> <span class="dt">MatchedRule</span>
+matchRule e r<span class="fu">@</span>(<span class="dt">Rule</span> selectors _) <span class="fu">=</span> <span class="kw">do</span>
+    s <span class="ot">&lt;-</span> find (matches e) selectors
+    return (spec s, r)
+
+<span class="co">-- check if a selector matches an element</span>
+<span class="ot">matches ::</span> <span class="dt">ElementData</span> <span class="ot">-&gt;</span> <span class="dt">Selector</span> <span class="ot">-&gt;</span> <span class="dt">Bool</span>
+matches e sl<span class="fu">@</span>(<span class="dt">Simple</span> _ _ _) <span class="fu">=</span> matchSimple e sl</code></pre>
+<p>That’s all pretty simple stuff, the remaining function to implement, <code>matchSimple</code> is more annoying. Here’s Matt’s code for this function in Robinson:</p>
+<pre class="sourceCode rust"><code class="sourceCode rust"><span class="kw">fn</span> matches_simple_selector(elem: &amp;ElementData, selector: &amp;SimpleSelector) -&gt; <span class="kw">bool</span> {
+    <span class="co">// Check type selector</span>
+    <span class="kw">if</span> selector.tag_name.iter().any(|name| elem.tag_name != *name) {
+        <span class="kw">return</span> <span class="kw">false</span>;
+    }
+
+    <span class="co">// Check ID selector</span>
+    <span class="kw">if</span> selector.id.iter().any(|id| elem.id() != <span class="kw">Some</span>(id)) {
+        <span class="kw">return</span> <span class="kw">false</span>;
+    }
+
+    <span class="co">// Check class selectors</span>
+    <span class="kw">let</span> elem_classes = elem.classes();
+    <span class="kw">if</span> selector.class.iter().any(|class| !elem_classes.contains(&amp;class.as_slice())) {
+        <span class="kw">return</span> <span class="kw">false</span>;
+    }
+
+    <span class="co">// We didn't find any non-matching selector components.</span>
+    <span class="kw">return</span> <span class="kw">true</span>;
+}</code></pre>
+<p>It’s non-obvious from reading this code what exactly constitutes an acceptable match, primarily because <code>iter().any()</code> silently drops out of the <code>Optional</code> type, it always returns False for <code>None</code>. It looks like <code>matches_simple_selector</code> is looking to check that everything matches, but what it’s actually doing is checking that a simple selector doesn’t have any fields that <em>don’t</em> match, values of <code>None</code> are skipped instead of counted as match failures. The recommended way to deal with optionals in Rust is to explicitly pattern match against them, which would have made this behavior a little more obvious.</p>
+<p>Our Haskell equivalent is <em>a teeny bit ugly</em></p>
+<pre class="sourceCode haskell"><code class="sourceCode haskell"><span class="co">-- matchSimple returns False if any selector field that exists</span>
+<span class="co">-- does not match the given element</span>
+<span class="ot">matchSimple ::</span> <span class="dt">ElementData</span> <span class="ot">-&gt;</span> <span class="dt">Selector</span> <span class="ot">-&gt;</span> <span class="dt">Bool</span>
+matchSimple e<span class="fu">@</span>(<span class="dt">ElementData</span> nm _) (<span class="dt">Simple</span> n i c) <span class="fu">=</span> 
+  <span class="kw">let</span> x <span class="fu">=</span> fmap (<span class="fu">==</span>nm) n
+      y <span class="fu">=</span> <span class="kw">if</span> i <span class="fu">==</span> <span class="dt">Nothing</span> <span class="kw">then</span> <span class="dt">Nothing</span> <span class="kw">else</span> <span class="dt">Just</span> <span class="fu">$</span> i <span class="fu">==</span> (findID e)
+      z <span class="fu">=</span> <span class="kw">if</span> not <span class="fu">$</span> null c <span class="kw">then</span> all (flip HS.member (classes e)) c <span class="kw">else</span> <span class="dt">True</span>
+  <span class="kw">in</span> <span class="kw">case</span> (x,y,z) <span class="kw">of</span>
+      (<span class="dt">Nothing</span>, <span class="dt">Nothing</span>, b3) <span class="ot">-&gt;</span> b3
+      (<span class="dt">Nothing</span>, <span class="dt">Just</span> b2, b3) <span class="ot">-&gt;</span> b2 <span class="fu">&amp;&amp;</span> b3
+      (<span class="dt">Just</span> b1, <span class="dt">Nothing</span>, b3) <span class="ot">-&gt;</span> b1 <span class="fu">&amp;&amp;</span> b3
+      (<span class="dt">Just</span> b1, <span class="dt">Just</span> b2, b3) <span class="ot">-&gt;</span> b1 <span class="fu">&amp;&amp;</span> b2 <span class="fu">&amp;&amp;</span> b3</code></pre>
+<p>That’s not totally illegible, but it’s not great. We could be more explicit by pattern matching on the function arguments like this:</p>
+<pre class="sourceCode haskell"><code class="sourceCode haskell">matchSimple e (<span class="dt">Simple</span> <span class="dt">Nothing</span>  <span class="dt">Nothing</span>  c) <span class="fu">=</span>  matchClasses e c
+matchSimple e (<span class="dt">Simple</span> (<span class="dt">Just</span> n) <span class="dt">Nothing</span>  c) <span class="fu">=</span>  matchNames e n
+                                           <span class="fu">&amp;&amp;</span> matchClasses e c
+matchSimple e (<span class="dt">Simple</span> <span class="dt">Nothing</span> (<span class="dt">Just</span> i)  c) <span class="fu">=</span>  matchId e i
+                                           <span class="fu">&amp;&amp;</span> matchClasses e c
+matchSimple e (<span class="dt">Simple</span> (<span class="dt">Just</span> n) (<span class="dt">Just</span> i) c) <span class="fu">=</span>  matchNames e n
+                                           <span class="fu">&amp;&amp;</span> matchId e i
+                                           <span class="fu">&amp;&amp;</span> matchClasses e c
+
+matchNames (<span class="dt">ElementData</span> nm _) n <span class="fu">=</span> n <span class="fu">==</span> nm
+
+matchId e i <span class="fu">=</span> findID e <span class="fu">==</span> <span class="dt">Just</span> i
+
+matchClasses e [] <span class="fu">=</span> <span class="dt">True</span>
+matchClasses e c <span class="fu">=</span> all (flip HS.member (classes e)) c</code></pre>
+<p>I personally don’t really feel like this version is much easier to read, but it does feel a little better.</p>
+<p>Finally we’ll add another really simple test.</p>
+<pre class="sourceCode haskell"><code class="sourceCode haskell">
+testStyle <span class="fu">=</span> <span class="dt">TestCase</span> <span class="fu">$</span> assertEqual <span class="st">&quot;styletree&quot;</span> styletree <span class="fu">$</span> styleTree dom css2 
+
+css2 <span class="fu">=</span> <span class="dt">Stylesheet</span> [ <span class="dt">Rule</span> [ <span class="dt">Simple</span> (<span class="dt">Just</span> <span class="st">&quot;head&quot;</span>) <span class="dt">Nothing</span> [] ]
+                         [ <span class="dt">Declaration</span> <span class="st">&quot;margin&quot;</span> (<span class="dt">Keyword</span> <span class="st">&quot;auto&quot;</span>)
+                         , <span class="dt">Declaration</span> <span class="st">&quot;color&quot;</span>  (<span class="dt">Color</span> <span class="dv">0</span> <span class="dv">0</span> <span class="dv">0</span> <span class="dv">255</span>) ]
+                  , <span class="dt">Rule</span> [ <span class="dt">Simple</span> (<span class="dt">Just</span> <span class="st">&quot;p&quot;</span>) <span class="dt">Nothing</span> [<span class="st">&quot;inner&quot;</span>] ]
+                         [ <span class="dt">Declaration</span> <span class="st">&quot;padding&quot;</span> (<span class="dt">Length</span> <span class="dv">17</span> <span class="dt">Px</span>) ] ]
+
+styletree <span class="fu">=</span> <span class="dt">NTree</span> (<span class="dt">Element</span> (<span class="dt">ElementData</span> <span class="st">&quot;html&quot;</span> empt),empt) [head,p1,p2]
+  <span class="kw">where</span>
+    head    <span class="fu">=</span> <span class="dt">NTree</span> (<span class="dt">Element</span> (<span class="dt">ElementData</span> <span class="st">&quot;head&quot;</span> empt),rule1) [title]
+    title   <span class="fu">=</span> <span class="dt">NTree</span> (<span class="dt">Element</span> (<span class="dt">ElementData</span> <span class="st">&quot;title&quot;</span> empt),empt) [test']
+    test'   <span class="fu">=</span> <span class="dt">NTree</span> (<span class="dt">Text</span> <span class="st">&quot;Test&quot;</span>,empt) []
+    p1      <span class="fu">=</span> <span class="dt">NTree</span> (<span class="dt">Element</span> (<span class="dt">ElementData</span> <span class="st">&quot;p&quot;</span> (HM.singleton <span class="st">&quot;class&quot;</span> <span class="st">&quot;inner&quot;</span>)),rule2) [hello,span]
+    hello   <span class="fu">=</span> <span class="dt">NTree</span> (<span class="dt">Text</span> <span class="st">&quot;Hello, &quot;</span>,empt) []
+    span    <span class="fu">=</span> <span class="dt">NTree</span> (<span class="dt">Element</span> (<span class="dt">ElementData</span> <span class="st">&quot;span&quot;</span> (HM.singleton <span class="st">&quot;id&quot;</span> <span class="st">&quot;name&quot;</span>)),empt) [world]
+    world   <span class="fu">=</span> <span class="dt">NTree</span> (<span class="dt">Text</span> <span class="st">&quot;world!&quot;</span>,empt) []
+    p2      <span class="fu">=</span> <span class="dt">NTree</span> (<span class="dt">Element</span> (<span class="dt">ElementData</span> <span class="st">&quot;p&quot;</span> (HM.singleton <span class="st">&quot;class&quot;</span> <span class="st">&quot;inner&quot;</span>)),rule2) [goodbye]
+    goodbye <span class="fu">=</span> <span class="dt">NTree</span> (<span class="dt">Text</span> <span class="st">&quot;Goodbye!\n    &quot;</span>,empt) []
+    empt    <span class="fu">=</span> HM.empty
+    rule1   <span class="fu">=</span> HM.fromList [(<span class="st">&quot;margin&quot;</span>,<span class="dt">Keyword</span> <span class="st">&quot;auto&quot;</span>),(<span class="st">&quot;color&quot;</span>,<span class="dt">Color</span> <span class="dv">0</span> <span class="dv">0</span> <span class="dv">0</span> <span class="dv">255</span>)]
+    rule2   <span class="fu">=</span> HM.singleton <span class="st">&quot;padding&quot;</span> (<span class="dt">Length</span> <span class="dv">17</span> <span class="dt">Px</span>)</code></pre>
+<p>The covers the entire Styling module, next time we’ll start building the Layout tree as we close in on actually getting something we can render.</p>
+<h1 id="addendum-linting">Addendum: Linting</h1>
+<p>I often forget that I have a linter installed (the Haskell Platform comes with Hlint), so I haven’t been linting the code for hubert up until this point. It’s generally a good idea to do so though, so let’s run Hlint real quick.</p>
+<pre class="sourceCode bash"><code class="sourceCode bash"><span class="kw">hlint</span> src --report</code></pre>
+<p>Hlint will write all its complaints to your terminal, but it also generates a file <code>report.html</code>. For me Hlint found 9 things to complain about, let’s go through and fix them.</p>
+<pre><code>src\Css.hs:81:13: Warning: Redundant bracket
+Found
+(sortBy comp) &lt;$&gt; sepBy1 (selector &lt;* spaces) comma
+Why not
+sortBy comp &lt;$&gt; sepBy1 (selector &lt;* spaces) comma
+
+ src\Css.hs:106:8: Warning: Use void
+Found
+char '*' &gt;&gt; return ()
+Why not
+Control.Monad.void (char '*')
+
+src\Css.hs:139:44: Warning: Redundant bracket
+Found
+digit &lt;|&gt; (char '.')
+Why not
+digit &lt;|&gt; char '.'
+
+src\Css.hs:162:26: Warning: Redundant bracket
+Found
+(notFollowedBy end) *&gt; p
+Why not
+notFollowedBy end *&gt; p
+
+src\Dom.hs:36:1: Error: Eta reduce
+Found
+elem name atts cs = NTree (Element (ElementData name atts)) cs
+Why not
+elem name atts = NTree (Element (ElementData name atts))
+
+src\Style.hs:47:24: Warning: Use section
+Found
+(flip HS.member (classes e))
+Why not
+(`HS.member` (classes e))
+
+src\Html\Parsec.hs:30:20: Warning: Use void
+Found
+try (string &quot;&lt;/&quot;) &gt;&gt; return ()
+Why not
+Control.Monad.void (try (string &quot;&lt;/&quot;))
+
+src\Html\Parser.hs:27:1: Error: Eta reduce
+Found
+runParserS p s = evalState (runExceptT p) s
+Why not
+runParserS p = evalState (runExceptT p)
+
+src\Html\Parser.hs:62:14: Error: Use unless
+Found
+if b then return () else throwError s
+Why not
+Control.Monad.unless b $ throwError s</code></pre>
+<p>I’ll make all these changes except for one: I’m not going to change <code>(flip HS.member (classes e))</code> to <code>(`HS.member` (classes e))</code> because it doesn’t really seem any better to me (possibly because Sublime refuses to color it). You can go ahead and make the change if you want. I’ll try to remember to lint as I go from now on, so we can avoid these interludes in the future.</p>
+<p>As usual, you can find the source for this post <a href="https://github.com/Hrothen/Hubert/blob/master/src/Style.hs">here</a> and the source for Robinson <a href="https://github.com/mbrubeck/robinson">here</a>.</p>
+    
+    <nav id="postNav">
+        
+            <a href="../posts/lets-build-a-browser-engine-in-haskell-part-5.html" style="float:left;">Previous post</a>
+        
+        
+            <a href="../posts/lets-build-a-browser-engine-in-haskell-part-3.html" style="float:right; text-align: right;">Next post</a>
+        
+    </nav>
+</article>
+        </div>
+        <footer>
+            <div style="float: left; text-align: left;">
+                &copy;Leif Grele
+                <br>
+                github.com/hrothen
+            </div>
+            <div>
+                Site proudly generated by
+                <a href="http://jaspervdj.be/hakyll">Hakyll</a>
+            </div>
+        </footer>
+    </body>
+</html>

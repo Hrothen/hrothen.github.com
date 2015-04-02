@@ -1,0 +1,361 @@
+<?xml version="1.0" encoding="UTF-8" ?>
+<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd">
+<html xmlns="http://www.w3.org/1999/xhtml" xml:lang="en" lang="en">
+    <head>
+        <meta http-equiv="Content-Type" content="text/html; charset=UTF-8" />
+        <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+        <title>Also Sprach Leif - Let's Write a Browser Engine in Haskell: a lens interlude</title>
+        <link rel="stylesheet" type="text/css" href="../css/default.css" />
+    </head>
+    <body>
+        <header>
+            <div id="logo">
+                <a href="../">Also Sprach Leif</a>
+            </div>
+            <nav>
+                <a href="../">Home</a>
+                <a href="../about.html">About</a>
+                <a href="../archive.html">Archive</a>
+                <a href="../atom.xml">Feed</a>
+            </nav>
+            <div id="tagline">
+                Math, Programming, Games, and whatever else I feel like
+            </div>
+        </header>
+
+        <div id="content">
+            <h1>Let's Write a Browser Engine in Haskell: a lens interlude</h1>
+
+            <article>
+    <div class="info">
+        Posted on January 20, 2015
+        
+    </div>
+    
+    <p>This post doesn’t cover any new functionality, instead, we’ll be revisiting some old code and refactoring it to be less awful. In particular, we’ll be using <a href="http://ekmett.github.io/lens/index.html">lenses</a> make our nested datatypes less annoying to work with. I’ve tried to record every change I made, but it’s possible I missed something, if you have trouble compiling, look at the github changelog to try to find the issue, and also let me know so I can update this article.</p>
+<h2 id="a-couple-notes-on-lenses">A couple notes on lenses</h2>
+<p>First: I am not going to attempt to explain lenses in any detail. <a href="http://unbui.lt/#!/post/haskell-another-lens-tutorial">This tutorial</a> is a decent introduction to what lenses are, but for our purposes it’s enough to know that lenses look and act a lot like accessors in other languages. Lenses compose “backwards” so for example <code>(content . height)</code> will access the height element of the content element of a <code>Dimensions</code>.</p>
+<p>Second: Lenses are a pain to read, partly because they compose backwards but also because the <code>lens</code> library includes operators for every situation Edward Kmett could think of (over 100 operators, including such gems as the squid operator <code>(&lt;&lt;&lt;&gt;~)</code> and the cartoon invective operator <code>(^@!?)</code>). We’ll try to avoid readability issues by using a really minimal set of lens functions and operators, namely: <code>(^.)</code> which gives the value of the field a lens accesses, <code>(.~)</code> which assigns a value to the field a lens accesses, <code>(.=)</code> which is <code>(.~)</code> but for the state inside a <code>State</code> monad, <code>(&amp;)</code> which is just <code>flip $</code> and is used to chain lens operations, <code>(&amp;~)</code> which is <code>(&amp;)</code> inside a <code>State</code> monad, and <code>zoom</code> which “zooms in” on a lens, so if we’re going to perform several operations on the same field, we don’t need to keep writing it.</p>
+<h2 id="adding-lenses-to-types">Adding Lenses to Types</h2>
+<p>The <code>lens</code> library conveniently provides a template haskell macro to create lenses for a structure, all we need to do is preface all fields we want to derive a lens for with <code>_</code>, and then call <code>makeLenses ''&lt;type name&gt;</code>. The ability to automatically derive lenses is the main reason we’re using the <code>lens</code> library instead of just writing our own simple lenses, if you don’t want to include all the dependencies <code>lens</code> has, you can also use <code>lens-family</code> which has all the operators we’ll be using.</p>
+<p>For starters, we’ll derive lenses for <code>NTree</code> in <code>Dom.hs</code></p>
+<pre class="sourceCode haskell"><code class="sourceCode haskell"><span class="co">-- I'm only showing lines that have changed</span>
+
+<span class="co">-- It's not actually mentioned on the page, probably because they thought it</span>
+<span class="co">-- was obvious, but you need the TemplateHaskell pragma to use makeLenses</span>
+<span class="ot">{-# LANGUAGE OverloadedStrings, FlexibleInstances, TemplateHaskell#-}</span>
+
+<span class="kw">import </span><span class="dt">Control.Lens</span>
+
+<span class="kw">data</span> <span class="dt">NTree</span> a <span class="fu">=</span> <span class="dt">NTree</span> { _<span class="ot">root ::</span> a, _<span class="ot">children ::</span> [<span class="dt">NTree</span> a] }
+
+makeLenses <span class="ch">''</span><span class="dt">NTree</span></code></pre>
+<p>Most of our work is going to be in <code>Layout.hs</code> which will look a lot nice by the time we finish.</p>
+<pre class="sourceCode haskell"><code class="sourceCode haskell"><span class="ot">{-#LANGUAGE BangPatterns, OverloadedStrings, TemplateHaskell#-}</span>
+
+<span class="kw">import </span><span class="dt">Data.Function</span> (on)
+
+<span class="kw">import </span><span class="dt">Control.Lens</span> <span class="kw">hiding</span> (children)
+
+<span class="kw">data</span> <span class="dt">Rect</span> <span class="fu">=</span> <span class="dt">Rect</span> { _<span class="ot">x      ::</span> <span class="dt">Float</span>
+                 , _<span class="ot">y      ::</span> <span class="dt">Float</span>
+                 , _<span class="ot">width  ::</span> <span class="dt">Float</span>
+                 , _<span class="ot">height ::</span> <span class="dt">Float</span> }
+
+<span class="kw">data</span> <span class="dt">Dimensions</span> <span class="fu">=</span> <span class="dt">Dimensions</span> { _<span class="ot">content ::</span> <span class="dt">Rect</span>
+                             , _<span class="ot">padding ::</span> <span class="dt">EdgeSize</span>
+                             , _<span class="ot">border  ::</span> <span class="dt">EdgeSize</span>
+                             , _<span class="ot">margin  ::</span> <span class="dt">EdgeSize</span> }
+
+<span class="kw">data</span> <span class="dt">EdgeSize</span> <span class="fu">=</span> <span class="dt">EdgeSize</span> { _<span class="ot">left   ::</span> <span class="dt">Float</span>
+                         , _<span class="ot">right  ::</span> <span class="dt">Float</span>
+                         , _<span class="ot">top    ::</span> <span class="dt">Float</span>
+                         , _<span class="ot">bottom ::</span> <span class="dt">Float</span> }
+
+makeLenses <span class="ch">''</span><span class="dt">Rect</span>
+makeLenses <span class="ch">''</span><span class="dt">Dimensions</span>
+makeLenses <span class="ch">''</span><span class="dt">EdgeSize</span>
+
+
+<span class="co">-- here we use (.~) to pass contBlock with its height value set to 0</span>
+<span class="ot">layoutTree ::</span> <span class="dt">StyledNode</span> <span class="ot">-&gt;</span> <span class="dt">Dimensions</span> <span class="ot">-&gt;</span> <span class="dt">Either</span> <span class="dt">T.Text</span> <span class="dt">LayoutBox</span>
+layoutTree root contBlock <span class="fu">=</span> buildLayoutTree root <span class="fu">&gt;&gt;=</span>
+                            flip layout (contBlock <span class="fu">&amp;</span> content<span class="fu">.</span>height<span class="fu">.~</span><span class="dv">0</span>)
+
+
+<span class="co">-- only one line has changed in buildLayoutTree</span>
+<span class="ot">buildLayoutTree ::</span> <span class="dt">StyledNode</span> <span class="ot">-&gt;</span> <span class="dt">Either</span> <span class="dt">T.Text</span> <span class="dt">LayoutBox</span>
+<span class="fu">...</span>
+anonify <span class="fu">=</span> concatMap mergeInlines <span class="fu">.</span> groupBy ((<span class="fu">&amp;&amp;</span>) <span class="ot">`on`</span> isInline)
+<span class="fu">...</span>
+
+
+<span class="co">-- here we use a lens to get rid of the ugly nested pattern match</span>
+<span class="ot">layout ::</span> <span class="dt">LayoutBox</span> <span class="ot">-&gt;</span> <span class="dt">Dimensions</span> <span class="ot">-&gt;</span> <span class="dt">Either</span> <span class="dt">T.Text</span> <span class="dt">LayoutBox</span>
+layout l contBlock <span class="fu">=</span> <span class="kw">case</span> l<span class="fu">^.</span>root<span class="fu">.</span>_2 <span class="kw">of</span>
+    <span class="dt">BlockNode</span>  _   <span class="ot">-&gt;</span> layoutBlock contBlock l
+    <span class="dt">InlineNode</span> _   <span class="ot">-&gt;</span> undefined
+    <span class="dt">AnonymousBlock</span> <span class="ot">-&gt;</span> undefined
+
+
+<span class="co">-- the next few function have changed significantly, and several parts</span>
+<span class="co">-- have been pulled out into their own things</span>
+
+auto <span class="fu">=</span> <span class="dt">Keyword</span> <span class="st">&quot;auto&quot;</span>
+zero <span class="fu">=</span> <span class="dt">Length</span> <span class="dv">0</span> <span class="dt">Px</span>
+
+
+<span class="ot">calcWidth ::</span> <span class="dt">Dimensions</span> <span class="ot">-&gt;</span> <span class="dt">LayoutBox</span> <span class="ot">-&gt;</span> <span class="dt">Either</span> <span class="dt">T.Text</span> <span class="dt">LayoutBox</span>
+calcWidth contBlock rt <span class="fu">=</span> <span class="kw">do</span>
+    style <span class="ot">&lt;-</span> getStyledElem rt
+    vals  <span class="ot">&lt;-</span> lookupSideVals rt
+    <span class="kw">let</span> w               <span class="fu">=</span> fromMaybe auto <span class="fu">$</span> value style <span class="st">&quot;width&quot;</span>
+        total           <span class="fu">=</span> sum <span class="fu">$</span> map toPx (w<span class="fu">:</span>vals)
+        underflow       <span class="fu">=</span> contBlock<span class="fu">^.</span>content<span class="fu">.</span>width <span class="fu">-</span> total
+        (margins,vals') <span class="fu">=</span> splitAt <span class="dv">2</span> vals
+        
+        (w',ml',mr') <span class="fu">=</span> checkUnderflow w underflow <span class="fu">$</span> checkAutoMargins margins w total
+
+        [w'',ml,mr,blw,brw,plf,prt] <span class="fu">=</span> map toPx (w'<span class="fu">:</span>ml'<span class="fu">:</span>mr'<span class="fu">:</span>vals')
+
+<span class="co">-- did you know you can use semicolons in haskell?</span>
+    return <span class="fu">$</span> rt <span class="fu">&amp;~</span> zoom (root <span class="fu">.</span> _1) (<span class="kw">do</span>
+        content<span class="fu">.</span>width <span class="fu">.=</span> w''
+        padding<span class="fu">.</span>left  <span class="fu">.=</span> plf; padding<span class="fu">.</span>right <span class="fu">.=</span> prt
+        border<span class="fu">.</span>left   <span class="fu">.=</span> blw; border<span class="fu">.</span>right  <span class="fu">.=</span> brw
+        margin<span class="fu">.</span>left   <span class="fu">.=</span> ml ; margin<span class="fu">.</span>right  <span class="fu">.=</span> mr)
+
+  <span class="kw">where</span>
+    checkAutoMargins [x,y] w total
+          <span class="fu">|</span> w <span class="fu">/=</span> auto <span class="fu">&amp;&amp;</span> total <span class="fu">&gt;</span> contBlock<span class="fu">^.</span>content<span class="fu">.</span>width <span class="fu">=</span> (check x,check y)
+          <span class="fu">|</span> otherwise <span class="fu">=</span> (x,y)
+        <span class="kw">where</span> check a <span class="fu">=</span> <span class="kw">if</span> a <span class="fu">==</span> auto <span class="kw">then</span> zero <span class="kw">else</span> a
+
+    checkUnderflow w uflow (mlf,mrt) <span class="fu">=</span> <span class="kw">case</span> (w <span class="fu">==</span> auto, mlf <span class="fu">==</span> auto, mrt <span class="fu">==</span> auto) <span class="kw">of</span>
+        (<span class="dt">False</span>,<span class="dt">False</span>,<span class="dt">False</span>) <span class="ot">-&gt;</span> (w , mlf, <span class="dt">Length</span> (toPx mrt <span class="fu">+</span> uflow) <span class="dt">Px</span>)
+        (<span class="dt">False</span>,<span class="dt">False</span>,<span class="dt">True</span>)  <span class="ot">-&gt;</span> (w , mlf, <span class="dt">Length</span> uflow <span class="dt">Px</span>)
+        (<span class="dt">False</span>,<span class="dt">True</span>,<span class="dt">False</span>)  <span class="ot">-&gt;</span> (w , <span class="dt">Length</span> uflow <span class="dt">Px</span>    , mrt)
+        (<span class="dt">False</span>,<span class="dt">True</span>,<span class="dt">True</span>)   <span class="ot">-&gt;</span> (w , <span class="dt">Length</span> (uflow<span class="fu">/</span><span class="dv">2</span>) <span class="dt">Px</span>, <span class="dt">Length</span> (uflow<span class="fu">/</span><span class="dv">2</span>) <span class="dt">Px</span>)
+        (<span class="dt">True</span>,_,_)          <span class="ot">-&gt;</span>
+            <span class="kw">let</span> l <span class="fu">=</span> <span class="kw">if</span> mlf <span class="fu">==</span> auto <span class="kw">then</span> zero <span class="kw">else</span> mlf
+                r <span class="fu">=</span> <span class="kw">if</span> mrt <span class="fu">==</span> auto <span class="kw">then</span> zero <span class="kw">else</span> mrt
+             <span class="kw">in</span> <span class="kw">if</span> uflow <span class="fu">&gt;=</span> <span class="dv">0</span>  
+                <span class="kw">then</span> (<span class="dt">Length</span> uflow <span class="dt">Px</span>,l,r)
+                <span class="kw">else</span> (zero,l,<span class="dt">Length</span> (toPx r <span class="fu">+</span> uflow) <span class="dt">Px</span>)
+
+
+<span class="co">-- I pulled out the lookup functions since they took up a lot of space,</span>
+<span class="co">-- and gave them nice descriptive names</span>
+
+<span class="ot">lookupSideVals ::</span> <span class="dt">LayoutBox</span> <span class="ot">-&gt;</span> <span class="dt">Either</span> <span class="dt">T.Text</span> [<span class="dt">Value</span>]
+lookupSideVals rt <span class="fu">=</span> <span class="kw">do</span>
+    style <span class="ot">&lt;-</span> getStyledElem rt
+    return <span class="fu">$</span> map (\a <span class="ot">-&gt;</span> lookup style a zero)
+        [ [<span class="st">&quot;margin-left&quot;</span>       , <span class="st">&quot;margin&quot;</span>]
+        , [<span class="st">&quot;margin-right&quot;</span>      , <span class="st">&quot;margin&quot;</span>]
+        , [<span class="st">&quot;border-left-width&quot;</span> , <span class="st">&quot;border-width&quot;</span>]
+        , [<span class="st">&quot;border-right-width&quot;</span>, <span class="st">&quot;border-width&quot;</span>]
+        , [<span class="st">&quot;padding-left&quot;</span>      , <span class="st">&quot;padding&quot;</span>]
+        , [<span class="st">&quot;padding-right&quot;</span>     , <span class="st">&quot;padding&quot;</span>] ]
+
+<span class="ot">lookupVertVals ::</span> <span class="dt">LayoutBox</span> <span class="ot">-&gt;</span> <span class="dt">Either</span> <span class="dt">T.Text</span> [<span class="dt">Float</span>]
+lookupVertVals rt <span class="fu">=</span> <span class="kw">do</span>
+    style <span class="ot">&lt;-</span> getStyledElem rt
+    return <span class="fu">$</span> map (toPx <span class="fu">.</span> (\a <span class="ot">-&gt;</span> lookup style a zero))
+        [ [<span class="st">&quot;margin-top&quot;</span>         , <span class="st">&quot;margin&quot;</span>]
+        , [<span class="st">&quot;margin-bottom&quot;</span>      , <span class="st">&quot;margin&quot;</span>]
+        , [<span class="st">&quot;border-top-width&quot;</span>   , <span class="st">&quot;border-width&quot;</span>]
+        , [<span class="st">&quot;border-bottom-width&quot;</span>, <span class="st">&quot;border-width&quot;</span>]
+        , [<span class="st">&quot;padding-top&quot;</span>        , <span class="st">&quot;padding&quot;</span>]
+        , [<span class="st">&quot;padding-bottom&quot;</span>     , <span class="st">&quot;padding&quot;</span>] ]
+
+
+<span class="ot">calcPosition ::</span> <span class="dt">Dimensions</span> <span class="ot">-&gt;</span> <span class="dt">LayoutBox</span> <span class="ot">-&gt;</span> <span class="dt">Either</span> <span class="dt">T.Text</span> <span class="dt">LayoutBox</span>
+calcPosition contBlock rt <span class="fu">=</span> <span class="kw">do</span>
+    [mt,mb,bt,bb,pt,pb] <span class="ot">&lt;-</span> lookupVertVals rt
+    <span class="kw">let</span> d <span class="fu">=</span> rt<span class="fu">^.</span>root<span class="fu">.</span>_1
+    return <span class="fu">$</span> rt <span class="fu">&amp;~</span> zoom (root <span class="fu">.</span> _1) (<span class="kw">do</span>
+        content<span class="fu">.</span>x<span class="fu">.=</span> contBlock<span class="fu">^.</span>content<span class="fu">.</span>x
+                  <span class="fu">+</span> d<span class="fu">^.</span>margin<span class="fu">.</span>left
+                  <span class="fu">+</span> d<span class="fu">^.</span>border<span class="fu">.</span>left
+                  <span class="fu">+</span> d<span class="fu">^.</span>padding<span class="fu">.</span>left
+        content<span class="fu">.</span>y<span class="fu">.=</span> contBlock<span class="fu">^.</span>content<span class="fu">.</span>y
+                  <span class="fu">+</span> contBlock<span class="fu">^.</span>content<span class="fu">.</span>height
+                  <span class="fu">+</span> pt <span class="fu">+</span> bt <span class="fu">+</span> mt
+        padding<span class="fu">.</span>top <span class="fu">.=</span> pt; padding<span class="fu">.</span>bottom <span class="fu">.=</span> pb
+        border<span class="fu">.</span>top  <span class="fu">.=</span> bt; border<span class="fu">.</span>bottom  <span class="fu">.=</span> bb
+        margin<span class="fu">.</span>top  <span class="fu">.=</span> mt; margin<span class="fu">.</span>bottom  <span class="fu">.=</span> mb)
+
+
+<span class="ot">layoutChildren ::</span> <span class="dt">LayoutBox</span> <span class="ot">-&gt;</span> <span class="dt">Either</span> <span class="dt">T.Text</span> <span class="dt">LayoutBox</span>
+layoutChildren rt <span class="fu">=</span> <span class="kw">do</span>
+    (dim,cs) <span class="ot">&lt;-</span> foldM foo (rt<span class="fu">^.</span>root<span class="fu">.</span>_1,[]) <span class="fu">$</span> rt<span class="fu">^.</span>children
+    return <span class="fu">$</span> rt <span class="fu">&amp;~</span> root<span class="fu">.</span>_1<span class="fu">.=</span> dim <span class="fu">&amp;~</span> children<span class="fu">.=</span> cs
+  <span class="kw">where</span>
+<span class="ot">    foo ::</span> (<span class="dt">Dimensions</span>,[<span class="dt">LayoutBox</span>]) <span class="ot">-&gt;</span> <span class="dt">LayoutBox</span> <span class="ot">-&gt;</span> <span class="dt">Either</span> <span class="dt">T.Text</span> (<span class="dt">Dimensions</span>,[<span class="dt">LayoutBox</span>])
+    foo (d,acc) c <span class="fu">=</span> <span class="kw">do</span>
+        c' <span class="ot">&lt;-</span> layout c d
+        return (d <span class="fu">&amp;</span> content<span class="fu">.</span>height<span class="fu">+~</span> marginBoxHeight (c'<span class="fu">^.</span>root<span class="fu">.</span>_1), acc <span class="fu">++</span> [c'])
+
+<span class="ot">calcHeight ::</span> <span class="dt">LayoutBox</span> <span class="ot">-&gt;</span> <span class="dt">Either</span> <span class="dt">T.Text</span> <span class="dt">LayoutBox</span>
+calcHeight rt <span class="fu">=</span> <span class="kw">do</span>
+    s <span class="ot">&lt;-</span> getStyledElem rt
+    <span class="kw">case</span> value s <span class="st">&quot;height&quot;</span> <span class="kw">of</span>
+        <span class="dt">Just</span> (<span class="dt">Length</span> h <span class="dt">Px</span>)  <span class="ot">-&gt;</span> return <span class="fu">$</span> rt <span class="fu">&amp;</span> root<span class="fu">.</span>_1<span class="fu">.</span>content<span class="fu">.</span>height<span class="fu">.~</span> h
+        <span class="dt">Nothing</span>             <span class="ot">-&gt;</span> return rt
+
+
+<span class="ot">marginBoxHeight ::</span> <span class="dt">Dimensions</span> <span class="ot">-&gt;</span> <span class="dt">Float</span>
+marginBoxHeight dim <span class="fu">=</span> (marginBox dim)<span class="fu">^.</span>height
+
+<span class="ot">getStyledElem ::</span> <span class="dt">LayoutBox</span> <span class="ot">-&gt;</span> <span class="dt">Either</span> <span class="dt">T.Text</span> <span class="dt">StyledNode</span>
+getStyledElem rt <span class="fu">=</span> <span class="kw">case</span> rt<span class="fu">^.</span>root<span class="fu">.</span>_2 <span class="kw">of</span>
+    <span class="dt">BlockNode</span>  s   <span class="ot">-&gt;</span> <span class="dt">Right</span> <span class="fu">$</span> <span class="dt">NTree</span> s []
+    <span class="dt">InlineNode</span> s   <span class="ot">-&gt;</span> <span class="dt">Right</span> <span class="fu">$</span> <span class="dt">NTree</span> s []
+    <span class="dt">AnonymousBlock</span> <span class="ot">-&gt;</span> <span class="dt">Left</span> <span class="st">&quot;Error: attempted to access the nonexistant\</span>
+<span class="st">                           \ StyleNode of an AnonymousBlock&quot;</span>
+
+
+<span class="ot">expandedBy ::</span> <span class="dt">Rect</span> <span class="ot">-&gt;</span> <span class="dt">EdgeSize</span> <span class="ot">-&gt;</span> <span class="dt">Rect</span>
+expandedBy rec edge <span class="fu">=</span> rec <span class="fu">&amp;~</span> <span class="kw">do</span>
+                          x <span class="fu">-=</span> edge<span class="fu">^.</span>left
+                          y <span class="fu">-=</span> edge<span class="fu">^.</span>top
+                          width  <span class="fu">+=</span> (edge<span class="fu">^.</span>left <span class="fu">+</span> edge<span class="fu">^.</span>right)
+                          height <span class="fu">+=</span> (edge<span class="fu">^.</span>top <span class="fu">+</span> edge<span class="fu">^.</span>bottom)
+
+
+<span class="ot">paddingBox ::</span> <span class="dt">Dimensions</span> <span class="ot">-&gt;</span> <span class="dt">Rect</span>
+paddingBox d <span class="fu">=</span> (d<span class="fu">^.</span>content) <span class="ot">`expandedBy`</span> (d<span class="fu">^.</span>padding)
+
+<span class="ot">marginBox ::</span> <span class="dt">Dimensions</span> <span class="ot">-&gt;</span> <span class="dt">Rect</span>
+marginBox d <span class="fu">=</span> borderBox d <span class="ot">`expandedBy`</span> (d<span class="fu">^.</span>margin)
+
+<span class="ot">borderBox ::</span> <span class="dt">Dimensions</span> <span class="ot">-&gt;</span> <span class="dt">Rect</span>
+borderBox d <span class="fu">=</span> paddingBox d <span class="ot">`expandedBy`</span> (d<span class="fu">^.</span>margin)</code></pre>
+<p>Now that we’re using lenses throughout our layout tree, we’ll need to update <code>Painting.hs</code> and <code>tests.hs</code> as well.</p>
+<pre class="sourceCode haskell"><code class="sourceCode haskell"><span class="co">-- Painting.hs</span>
+
+<span class="kw">import </span><span class="dt">Control.Lens</span>
+
+<span class="ot">paint ::</span> <span class="dt">LayoutBox</span> <span class="ot">-&gt;</span> <span class="dt">Rect</span> <span class="ot">-&gt;</span> <span class="dt">Canvas</span>
+paint root bounds <span class="fu">=</span> <span class="kw">let</span> dlist  <span class="fu">=</span> buildDisplayList root
+                        canvas <span class="fu">=</span> newCanvas w h
+                        w <span class="fu">=</span> fromInteger <span class="fu">.</span> floor <span class="fu">$</span> bounds<span class="fu">^.</span>width
+                        h <span class="fu">=</span> fromInteger <span class="fu">.</span> floor <span class="fu">$</span> bounds<span class="fu">^.</span>height
+                    <span class="kw">in</span> F.foldl' paintItem canvas dlist
+
+
+<span class="ot">buildDisplayList ::</span> <span class="dt">LayoutBox</span> <span class="ot">-&gt;</span> <span class="dt">DisplayList</span>
+buildDisplayList <span class="fu">=</span> F.foldMap renderLayoutBox
+
+
+<span class="ot">renderBorders ::</span> (<span class="dt">Dimensions</span>,<span class="dt">BoxType</span>) <span class="ot">-&gt;</span> <span class="dt">DisplayList</span>
+renderBorders (dim,ty) <span class="fu">=</span> maybe mempty renderBorders' (getColor ty <span class="st">&quot;border-color&quot;</span>)
+  <span class="kw">where</span>
+    renderBorders' color <span class="fu">=</span> V.fromList <span class="fu">$</span> map (<span class="dt">SolidColor</span> color) [l, r, t, b]
+    bbox <span class="fu">=</span> borderBox dim
+    bdr  <span class="fu">=</span> dim<span class="fu">^.</span>border
+    
+    l <span class="fu">=</span> bbox <span class="fu">&amp;</span> width<span class="fu">.~</span> bdr<span class="fu">^.</span>left
+    
+    r <span class="fu">=</span> bbox <span class="fu">&amp;</span> x<span class="fu">+~</span> bbox<span class="fu">^.</span>width <span class="fu">-</span> bdr<span class="fu">^.</span>right
+             <span class="fu">&amp;</span> width<span class="fu">.~</span> bdr<span class="fu">^.</span>right
+    
+    t <span class="fu">=</span> bbox <span class="fu">&amp;</span> height<span class="fu">.~</span> bdr<span class="fu">^.</span>top
+    
+    b <span class="fu">=</span> bbox <span class="fu">&amp;</span> y<span class="fu">+~</span> bbox<span class="fu">^.</span>height <span class="fu">-</span> bdr<span class="fu">^.</span>bottom
+             <span class="fu">&amp;</span> height<span class="fu">.~</span> bdr<span class="fu">^.</span>bottom
+
+
+<span class="ot">paintItem ::</span> <span class="dt">Canvas</span> <span class="ot">-&gt;</span> <span class="dt">DisplayCommand</span> <span class="ot">-&gt;</span> <span class="dt">Canvas</span>
+paintItem cs (<span class="dt">SolidColor</span> color rect) <span class="fu">=</span> updateChunk cs (x0,x1) (y0,y1) color
+  <span class="kw">where</span>
+    x0 <span class="fu">=</span> clampInt <span class="dv">0</span> (w<span class="fu">-</span><span class="dv">1</span>) (rect<span class="fu">^.</span>x)
+    y0 <span class="fu">=</span> clampInt <span class="dv">0</span> (h<span class="fu">-</span><span class="dv">1</span>) (rect<span class="fu">^.</span>y)
+    x1 <span class="fu">=</span> clampInt <span class="dv">0</span> (w<span class="fu">-</span><span class="dv">1</span>) (rect<span class="fu">^.</span>x <span class="fu">+</span> rect<span class="fu">^.</span>width <span class="fu">-</span> <span class="dv">1</span>)
+    y1 <span class="fu">=</span> clampInt <span class="dv">0</span> (h<span class="fu">-</span><span class="dv">1</span>) (rect<span class="fu">^.</span>y <span class="fu">+</span> rect<span class="fu">^.</span>height <span class="fu">-</span> <span class="dv">1</span>)
+    w <span class="fu">=</span> asFloat <span class="fu">$</span> wdth cs
+    h <span class="fu">=</span> asFloat <span class="fu">$</span> hght cs
+    asFloat <span class="fu">=</span> fromInteger <span class="fu">.</span> toInteger
+
+
+<span class="co">-- tests.hs</span>
+<span class="kw">import </span><span class="dt">Control.Lens</span>
+
+contBlock <span class="fu">=</span> defaultDim <span class="fu">&amp;</span> content<span class="fu">.</span>width<span class="fu">.~</span><span class="dv">800</span> <span class="fu">&amp;</span> content<span class="fu">.</span>height<span class="fu">.~</span><span class="dv">168</span>
+
+paintpng <span class="fu">=</span> paintpng' s d
+  <span class="kw">where</span>
+    (<span class="dt">Right</span> d) <span class="fu">=</span> PS.parseHtml pnghtml
+    (<span class="dt">Right</span> s) <span class="fu">=</span> parseCSS pngcss
+    paintpng' s d <span class="fu">=</span> <span class="kw">do</span>
+      <span class="kw">let</span> st <span class="fu">=</span> styleTree d s
+      lyt <span class="ot">&lt;-</span> layoutTree st contBlock
+      <span class="kw">let</span> vec <span class="fu">=</span> pixels <span class="fu">$</span> paint lyt (contBlock<span class="fu">^.</span>content)
+      return <span class="fu">$</span> generateImage (\x y<span class="ot">-&gt;</span> c2px <span class="fu">$</span> vec <span class="fu">V.!</span> (x <span class="fu">+</span> (y <span class="fu">*</span> <span class="dv">800</span>))) <span class="dv">800</span> <span class="dv">168</span>
+    c2px (<span class="dt">Color</span> r g b _) <span class="fu">=</span> <span class="dt">PixelRGB8</span> r g b</code></pre>
+<p>Finally, update <code>hubert.cabal</code> to add our lens dependency</p>
+<pre><code>executable hubert
+  main-is:             Main.hs
+  other-modules:       Dom,
+                       HTML.Parser,
+                       HTML.Parsec,
+                       CSS,
+                       Style,
+                       Layout
+
+  -- other-extensions:    
+  build-depends:       base &gt;=4.7 &amp;&amp; &lt;5,
+                       unordered-containers &gt;=0.2 &amp;&amp; &lt;0.3,
+                       mtl &gt;= 2.2.1,
+                       text &gt;= 1.1.0.0,
+                       parsec == 3.1.*,
+                       lens &gt;= 4.6
+
+
+Test-Suite hunit-tests
+  type:             exitcode-stdio-1.0
+  main-is:          tests.hs
+  other-modules:    Dom,
+                    HTML.Parser,
+                    HTML.Parsec,
+                    CSS,
+                    Style,
+                    Layout,
+                    Painting
+  build-depends:    base &gt;= 4.7 &amp;&amp; &lt; 5,
+                    unordered-containers &gt;=0.2 &amp;&amp; &lt;0.3,
+                    mtl &gt;= 2.2.1,
+                    text &gt;= 1.1.0.0,
+                    HUnit &gt;= 1.2.5.0,
+                    parsec == 3.1.*,
+                    vector &gt;= 0.10.9.1,
+                    JuicyPixels &gt;= 3.1.7.1,
+                    lens &gt;= 4.6
+  hs-source-dirs:   tests,
+                    src
+  default-language: Haskell2010</code></pre>
+<p>At this point, everything should compile and run correctly. We’ve used lenses to make the deeply nested updates in <code>Layout.hs</code> somewhat less awful to read, and we should be set until Robinson updates again.</p>
+<p>As usual, you can find the source for this post <a href="https://github.com/Hrothen/Hubert/tree/master/src">here</a> and the source for Robinson <a href="https://github.com/mbrubeck/robinson">here</a>.</p>
+    
+    <nav id="postNav">
+        
+        
+            <a href="../posts/lets-build-a-browser-engine-in-haskell-part-6.html" style="float:right; text-align: right;">Next post</a>
+        
+    </nav>
+</article>
+        </div>
+        <footer>
+            <div style="float: left; text-align: left;">
+                &copy;Leif Grele
+                <br>
+                github.com/hrothen
+            </div>
+            <div>
+                Site proudly generated by
+                <a href="http://jaspervdj.be/hakyll">Hakyll</a>
+            </div>
+        </footer>
+    </body>
+</html>
