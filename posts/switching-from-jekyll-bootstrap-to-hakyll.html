@@ -1,0 +1,165 @@
+<?xml version="1.0" encoding="UTF-8" ?>
+<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd">
+<html xmlns="http://www.w3.org/1999/xhtml" xml:lang="en" lang="en">
+    <head>
+        <meta http-equiv="Content-Type" content="text/html; charset=UTF-8" />
+        <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+        <title>Also Sprach Leif - Switching from Jekyll Bootstrap to Hakyll</title>
+        <link rel="stylesheet" type="text/css" href="../css/default.css" />
+    </head>
+    <body>
+        <header>
+            <div id="logo">
+                <a href="../">Also Sprach Leif</a>
+            </div>
+            <nav>
+                <a href="../">Home</a>
+                <a href="../about.html">About</a>
+                <a href="../archive.html">Archive</a>
+                <a href="../atom.xml">Feed</a>
+            </nav>
+            <div id="tagline">
+                Math, Programming, Games, and whatever else I feel like
+            </div>
+        </header>
+
+        <div id="content">
+            <h1>Switching from Jekyll Bootstrap to Hakyll</h1>
+
+            <article>
+    <div class="info">
+        Posted on April  2, 2015
+        
+    </div>
+    
+    <p>I recently decided to switch from using <a href="http://jekyllbootstrap.com/">Jekyll Bootstrap</a> to build my blog, to using <a href="http://jaspervdj.be/hakyll/index.html">Hakyll.</a> Mostly just because I was rewriting all the html and css anyway and I wanted to give Hakyll a try, but also because I wanted to have a better idea of what was going on with each part of the site.</p>
+<p>Getting started with Hakyll is pretty easy, the package comes with a program <code>hakyll-init</code> which creates a basic site for you to build on, and there are lots of sites using it that open source their code. Some of the stuff I wanted to do took some work to figure out or find though, so I thought I’d collect a list of it here.</p>
+<h2 id="adding-next-and-previous-buttons-to-posts">Adding Next and Previous Buttons to Posts</h2>
+<p>There are a number of ways to add next and previous buttons to the posts, I liked the method I found on <a href="https://github.com/rgoulter/my-hakyll-blog/blob/master/site.hs">Richard Goulter’s blog</a>, but hakyll has added some new functions since that was written and we can cut it down a bit now.</p>
+<pre class="sourceCode haskell"><code class="sourceCode haskell">postList <span class="ot">&lt;-</span> sortRecentFirst <span class="fu">=&lt;&lt;</span> getMatches <span class="st">&quot;posts/*&quot;</span>
+
+    match <span class="st">&quot;posts/*&quot;</span> <span class="fu">$</span> <span class="kw">do</span>
+
+        <span class="co">-- strip date from filename when producing route</span>
+        route <span class="fu">$</span> gsubRoute postDateRegex (const <span class="st">&quot;posts/&quot;</span>) <span class="ot">`composeRoutes`</span>
+                setExtension <span class="st">&quot;html&quot;</span>
+
+        compile <span class="fu">$</span> <span class="kw">do</span>
+            <span class="kw">let</span> postLocationContext <span class="fu">=</span>
+                    field <span class="st">&quot;nextPost&quot;</span> (nextPostURL postList) <span class="ot">`mappend`</span>
+                    field <span class="st">&quot;prevPost&quot;</span> (prevPostURL postList) <span class="ot">`mappend`</span>
+                    postCtx
+            pandocCompiler
+                <span class="fu">&gt;&gt;=</span> loadAndApplyTemplate <span class="st">&quot;templates/post.html&quot;</span>    postLocationContext
+                <span class="fu">&gt;&gt;=</span> saveSnapshot <span class="st">&quot;content&quot;</span>
+                <span class="fu">&gt;&gt;=</span> loadAndApplyTemplate <span class="st">&quot;templates/default.html&quot;</span> postLocationContext
+                <span class="fu">&gt;&gt;=</span> relativizeUrls</code></pre>
+<p>With <code>sortRecentFirst</code> from Hakyll, I now only need to define <code>nextPostURL</code> and <code>prevPostURL</code>, which are almost identical.</p>
+<pre class="sourceCode haskell"><code class="sourceCode haskell"><span class="ot">findPostUrl ::</span> ([<span class="dt">Identifier</span>] <span class="ot">-&gt;</span> <span class="dt">Identifier</span> <span class="ot">-&gt;</span> <span class="dt">Maybe</span> <span class="dt">Identifier</span>)
+             <span class="ot">-&gt;</span> [<span class="dt">Identifier</span>] <span class="ot">-&gt;</span> <span class="dt">Item</span> <span class="dt">String</span>
+             <span class="ot">-&gt;</span> <span class="dt">Compiler</span> <span class="dt">String</span>
+findPostUrl p posts post <span class="fu">=</span> <span class="kw">do</span>
+    <span class="kw">let</span> id <span class="fu">=</span> itemIdentifier post
+    <span class="kw">case</span> p posts id <span class="kw">of</span>
+        <span class="dt">Just</span> m  <span class="ot">-&gt;</span> maybe empty toUrl <span class="fu">&lt;$&gt;</span> getRoute m
+        <span class="dt">Nothing</span> <span class="ot">-&gt;</span> empty
+
+
+<span class="ot">prevPostURL ::</span> [<span class="dt">Identifier</span>] <span class="ot">-&gt;</span> <span class="dt">Item</span> <span class="dt">String</span> <span class="ot">-&gt;</span> <span class="dt">Compiler</span> <span class="dt">String</span>
+prevPostURL <span class="fu">=</span> findPostUrl lookupPrev
+
+
+<span class="ot">nextPostURL ::</span> [<span class="dt">Identifier</span>] <span class="ot">-&gt;</span> <span class="dt">Item</span> <span class="dt">String</span> <span class="ot">-&gt;</span> <span class="dt">Compiler</span> <span class="dt">String</span>
+nextPostURL <span class="fu">=</span> findPostUrl lookupNext
+
+
+<span class="ot">lookupPrev ::</span> <span class="dt">Eq</span> a <span class="ot">=&gt;</span> [a] <span class="ot">-&gt;</span> a <span class="ot">-&gt;</span> <span class="dt">Maybe</span> a
+lookupPrev ids id <span class="fu">=</span> <span class="kw">case</span> elemIndex id ids <span class="kw">of</span>
+                        <span class="dt">Just</span> i <span class="ot">-&gt;</span> <span class="kw">if</span> i <span class="fu">&gt;=</span> (length ids <span class="fu">-</span> <span class="dv">1</span>) <span class="kw">then</span> <span class="dt">Nothing</span> <span class="kw">else</span> <span class="dt">Just</span> <span class="fu">$</span> ids<span class="fu">!!</span>(i<span class="fu">+</span><span class="dv">1</span>)
+                        <span class="dt">Nothing</span> <span class="ot">-&gt;</span> <span class="dt">Nothing</span>
+
+<span class="ot">lookupNext ::</span> <span class="dt">Eq</span> a <span class="ot">=&gt;</span> [a] <span class="ot">-&gt;</span> a <span class="ot">-&gt;</span> <span class="dt">Maybe</span> a
+lookupNext ids id <span class="fu">=</span> <span class="kw">case</span> elemIndex id ids <span class="kw">of</span>
+                        <span class="dt">Just</span> i <span class="ot">-&gt;</span> <span class="kw">if</span> i <span class="fu">&lt;=</span> <span class="dv">0</span> <span class="kw">then</span> <span class="dt">Nothing</span> <span class="kw">else</span> <span class="dt">Just</span> <span class="fu">$</span> ids<span class="fu">!!</span>(i<span class="fu">-</span><span class="dv">1</span>)
+                        <span class="dt">Nothing</span> <span class="ot">-&gt;</span> <span class="dt">Nothing</span></code></pre>
+<p>I also changed <code>lookupNext</code> and <code>lookupPrev</code> to use indicies because I managed to get them subtly wrong like, five times while setting up the site (in fact at the time of this writing they are wrong, and will hopefully be finally fixed for real when I post this).</p>
+<h2 id="setting-up-redirects-on-github-pages">Setting up Redirects on Github Pages</h2>
+<p>Github doesn’t let me directly tell the server to issue redirects, but fortunately HTML already has a way to do this. I’ll create a template <code>redirect.html</code> that contains the following lines:</p>
+<pre class="sourceCode html"><code class="sourceCode html"><span class="dt">&lt;!DOCTYPE </span>html<span class="dt">&gt;</span>
+<span class="kw">&lt;html&gt;</span>
+    <span class="kw">&lt;head&gt;</span>
+        <span class="kw">&lt;meta</span><span class="ot"> http-equiv=</span><span class="st">&quot;content-type&quot;</span><span class="ot"> content=</span><span class="st">&quot;text/html; charset=utf-8&quot;</span> <span class="kw">/&gt;</span>
+        <span class="kw">&lt;meta</span><span class="ot"> http-equiv=</span><span class="st">&quot;refresh&quot;</span><span class="ot"> content=</span><span class="st">&quot;0; url=/$postName$&quot;</span> <span class="kw">/&gt;</span>
+    <span class="kw">&lt;/head&gt;</span>
+<span class="kw">&lt;/html&gt;</span></code></pre>
+<p>So then I just need to get a list of all the pages I want to redirect from and their targets, and then produce a tiny page for each one with <code>postName</code> replaced. This turns out to be fairly simple once you spend some time looking at the Hakyll docs. For extensibility, I’ll use post metadata to decide what redirect pages to generate, this way I don’t need to artificially separate my old posts and new posts, and if I want to I can create multiple aliases to a page.</p>
+<pre class="sourceCode haskell"><code class="sourceCode haskell">aliasList <span class="ot">&lt;-</span> getAliases <span class="fu">&lt;$&gt;</span> getAllMetadata <span class="st">&quot;posts/*&quot;</span>
+<span class="kw">let</span> aliases <span class="fu">=</span> map fromFilePath <span class="fu">$</span> snd <span class="fu">$</span> unzip aliasList
+
+create aliases <span class="fu">$</span> <span class="kw">do</span>
+        route idRoute
+        compile <span class="fu">$</span> <span class="kw">do</span>
+            <span class="kw">let</span> aliasCtx <span class="fu">=</span> field <span class="st">&quot;postName&quot;</span> (getRealName aliasList) <span class="ot">`mappend`</span>
+                           defaultContext
+            makeItem <span class="st">&quot;&quot;</span>
+                <span class="fu">&gt;&gt;=</span> loadAndApplyTemplate <span class="st">&quot;templates/redirect.html&quot;</span> aliasCtx
+                <span class="fu">&gt;&gt;=</span> relativizeUrls</code></pre>
+<p>I grab all the metadata for each file in <code>posts/</code>, and convert them into <code>(target,alias)</code> pairs. The list <code>aliases</code> contains only the alias names, which I use to generate the redirect pages, looking up the target page name in <code>aliasList</code> with <code>getRealName</code>. The actual work is done in <code>getAliases</code>, which filters out pages that don’t define the <code>aliases</code> keyword and reformats titles to match my url scheme.</p>
+<pre class="sourceCode haskell"><code class="sourceCode haskell"><span class="ot">stripPostDate ::</span> FilePath <span class="ot">-&gt;</span> FilePath
+stripPostDate <span class="fu">=</span> replaceAll postDateRegex (const <span class="st">&quot;posts/&quot;</span>)
+
+<span class="co">-- convert a list of (Identifier,Metadata) into a list of (target,alias)</span>
+<span class="ot">getAliases ::</span> [(<span class="dt">Identifier</span>,<span class="dt">Metadata</span>)] <span class="ot">-&gt;</span> [(FilePath,FilePath)]
+getAliases ids <span class="fu">=</span>
+    <span class="kw">let</span> pairs <span class="fu">=</span> filter (not <span class="fu">.</span> null <span class="fu">.</span> snd) <span class="fu">$</span> map expand ids
+        paths <span class="fu">=</span> map (second (map addIndex) <span class="fu">.</span> first idToPath) pairs
+    <span class="kw">in</span> concatMap unzipSecond paths
+
+  <span class="kw">where</span>
+<span class="ot">    expand ::</span> (<span class="dt">Identifier</span>,<span class="dt">Metadata</span>) <span class="ot">-&gt;</span> (<span class="dt">Identifier</span>,[FilePath])
+    expand <span class="fu">=</span> second (maybe [] read <span class="fu">.</span> M.lookup <span class="st">&quot;aliases&quot;</span>)
+
+<span class="ot">    idToPath ::</span> <span class="dt">Identifier</span> <span class="ot">-&gt;</span> FilePath
+    idToPath <span class="fu">=</span> stripPostDate <span class="fu">.</span> toFilePath
+
+<span class="ot">    addIndex ::</span> FilePath <span class="ot">-&gt;</span> FilePath
+    addIndex f <span class="fu">=</span> dropWhile (<span class="fu">==</span><span class="ch">'/'</span>)  <span class="fu">$</span> dropExtension f <span class="fu">&lt;/&gt;</span> <span class="st">&quot;index.html&quot;</span>
+
+<span class="co">-- get the path of the page an alias is pointing to</span>
+<span class="ot">getRealName ::</span> [(FilePath,FilePath)] <span class="ot">-&gt;</span> <span class="dt">Item</span> <span class="dt">String</span> <span class="ot">-&gt;</span> <span class="dt">Compiler</span> <span class="dt">String</span>
+getRealName as i <span class="fu">=</span> <span class="kw">do</span>
+    <span class="kw">let</span> id   <span class="fu">=</span> toFilePath <span class="fu">$</span> itemIdentifier i
+        path <span class="fu">=</span> fst <span class="fu">$</span> fromJust <span class="fu">$</span> find ((<span class="fu">==</span>id) <span class="fu">.</span> snd) as
+    return <span class="fu">$</span> replaceExtension path <span class="st">&quot;html&quot;</span>
+
+<span class="ot">unzipSecond ::</span> (a,[b]) <span class="ot">-&gt;</span> [(a,b)]
+unzipSecond (x,ys) <span class="fu">=</span> map (\a<span class="ot">-&gt;</span>(x,a)) ys</code></pre>
+<p>Some of this is specific to my site layout and title format, but most of it is general-purpose. If you haven’t seen them before, <code>first</code> and <code>second</code> from <code>Control.Arrow</code> have kind of scary types, but the way most people use them is just to apply a function inside a tuple: <code>first foo (a,b) == (foo a,b)</code> and <code>second bar (a,b) == (a, bar b)</code>.</p>
+<h2 id="actually-deploying-the-thing">Actually Deploying the Thing</h2>
+<p>So, if you’re not using Jekyll, github wants you to just upload the static site directly, but this is a problem because I’ve got all this stuff that isn’t part of the site sitting in the repo. The solution is to keep all the source in a separate branch, which I call <code>hakyll</code>, and then deploy by pushing only the built site in <code>_site/</code> to <code>master</code>. For this purpose I modified the <code>deploy.sh</code> script used by <a href="https://github.com/blaenk/blaenk.github.io/blob/source/src/deploy.sh">Jorge Israel Peña</a> for his blog. Hakyll has a deploy command you can set in the site configuration, so I add</p>
+<pre class="sourceCode haskell"><code class="sourceCode haskell"><span class="ot">siteConfig ::</span> <span class="dt">Configuration</span>
+siteConfig <span class="fu">=</span> defaultConfiguration{ deployCommand <span class="fu">=</span> <span class="st">&quot;bash deploy.sh deploy&quot;</span> }</code></pre>
+<p>And replace the call to <code>hakyll</code> with <code>hakyllWith siteConfig</code> in <code>main</code>. Then I can just deploy the site by calling <code>./site deploy</code>.</p>
+<p>Overall switching to Hakyll was pretty simple, and I didn’t really have any issues figuring out how to do anything I wanted, so I’d call this a win.</p>
+    
+    <nav id="postNav">
+        
+            <a href="../posts/lets-write-a-browser-engine-in-haskell-a-lens-interlude.html" style="float:left;">Previous post</a>
+        
+        
+    </nav>
+</article>
+        </div>
+        <footer>
+            <div style="float: left; text-align: left;">
+                &copy;Leif Grele
+                <br>
+                github.com/hrothen
+            </div>
+            <div>
+                Site proudly generated by
+                <a href="http://jaspervdj.be/hakyll">Hakyll</a>
+            </div>
+        </footer>
+    </body>
+</html>
